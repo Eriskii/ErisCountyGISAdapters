@@ -26,6 +26,9 @@ pub struct Request {
     /// The request's `authorization` header.
     pub authorization: String,
     pub model: String,
+    /// What the request asks of the model's thinking: its `thinking` type and effort, if any.
+    pub thinking: Option<String>,
+    pub effort: Option<String>,
     pub instructions: String,
     /// The user messages, in order.
     pub user: Vec<String>,
@@ -77,6 +80,8 @@ fn read_anthropic(body: &Value, authorization: String) -> Request {
         provider: "anthropic",
         authorization,
         model: body["model"].as_str().unwrap_or_default().to_owned(),
+        thinking: body["thinking"]["type"].as_str().map(str::to_owned),
+        effort: body["output_config"]["effort"].as_str().map(str::to_owned),
         instructions,
         user,
         outputs,
@@ -105,6 +110,8 @@ fn read(body: &Value, authorization: String) -> Request {
         provider: "codex",
         authorization,
         model: body["model"].as_str().unwrap_or_default().to_owned(),
+        thinking: None,
+        effort: body["reasoning"]["effort"].as_str().map(str::to_owned),
         instructions: body["instructions"].as_str().unwrap_or_default().to_owned(),
         user,
         outputs,
@@ -158,13 +165,22 @@ async fn profile() -> axum::Json<Value> {
         "organization": {"organization_type": "claude_max"}}))
 }
 
+/// A Claude model as Anthropic lists it: thinking adaptively at every effort, or, when
+/// `adaptive` is false, only on a budget.
+fn claude_model(id: &str, adaptive: bool) -> Value {
+    let level = json!({"supported": adaptive});
+    json!({"id": id, "max_input_tokens": 200000, "capabilities": {
+        "effort": {"supported": adaptive, "low": level, "medium": level, "high": level, "xhigh": level, "max": level},
+        "thinking": {"supported": true, "types": {"adaptive": {"supported": adaptive}, "enabled": {"supported": true}}}}})
+}
+
 /// The Claude models a login offers, newest first.
 async fn claude_models() -> axum::Json<Value> {
     axum::Json(json!({"data": [
-        {"id": "claude-sonnet-9", "display_name": "Claude Sonnet 9", "max_input_tokens": 1000000},
-        {"id": "claude-haiku-9", "display_name": "Claude Haiku 9", "max_input_tokens": 200000},
-        {"id": "claude-haiku-8", "display_name": "Claude Haiku 8", "max_input_tokens": 200000},
-        {"id": "claude-opus-9", "display_name": "Claude Opus 9", "max_input_tokens": 1000000},
+        claude_model("claude-sonnet-9", true),
+        claude_model("claude-haiku-9", true),
+        claude_model("claude-haiku-8", false),
+        claude_model("claude-opus-9", true),
     ], "has_more": false}))
 }
 

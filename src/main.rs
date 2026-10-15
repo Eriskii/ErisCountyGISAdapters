@@ -52,10 +52,10 @@ enum Command {
         /// Jobs running at once.
         #[arg(long, default_value_t = 8)]
         concurrency: usize,
-        /// Models cheapest first, as model[:effort],…; haiku, sonnet and opus mean the newest
-        /// Claude model of that family. By default: with a Claude login, Haiku, Sonnet, then
-        /// ChatGPT's flagship at high effort (or Opus); with ChatGPT alone, its small model, then
-        /// its flagship at medium and high effort.
+        /// Models cheapest first, as model[:effort],…, such as haiku:medium,sonnet:high; haiku,
+        /// sonnet and opus mean the newest Claude model of that family. By default: with a Claude
+        /// login, Haiku at medium, Sonnet at high, then ChatGPT's flagship (or Opus) at high; with
+        /// ChatGPT alone, its small model at medium, then its flagship at medium and high.
         #[arg(long)]
         ladder: Option<String>,
         /// Attempts on each rung before climbing to the next.
@@ -237,13 +237,11 @@ async fn main() -> Result<()> {
                 bail!("no models: sign in first (eris-county-gis login, or login --claude)");
             }
             for m in &listed {
-                println!(
-                    "{:10} {:28} context {:>8} efforts {}",
-                    m.provider,
-                    m.id,
-                    m.context_window.unwrap_or(0),
-                    m.efforts.join(",")
-                );
+                let efforts = match &m.cannot_run {
+                    Some(reason) => format!("cannot run: {reason}"),
+                    None => format!("efforts {}", m.efforts.join(",")),
+                };
+                println!("{:10} {:28} context {:>8} {efforts}", m.provider, m.id, m.context_window.unwrap_or(0));
             }
             println!("\ndefault ladder:");
             for (i, rung) in models::default_ladder(&listed).iter().enumerate() {

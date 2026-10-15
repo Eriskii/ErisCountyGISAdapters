@@ -283,7 +283,7 @@ async fn claude_rungs_run_on_the_bound_claude_code_login() {
 
     let endpoints = Endpoints { codex: model.url.clone(), claude_api: model.url.clone() };
     let listed = models::list_claude(&claude, &endpoints.claude_api).await.unwrap();
-    let ladder = models::parse_ladder("haiku, sonnet", &listed).unwrap();
+    let ladder = models::parse_ladder("haiku:low, sonnet:high", &listed).unwrap();
     let providers = models::providers(&openai, &claude, &endpoints, "test").await.unwrap();
     let run = scheduler_on(dir.path(), providers, ladder, vec!["55025".into()], false).await;
     tokio::time::timeout(Duration::from_secs(60), run.run()).await.unwrap().unwrap();
@@ -295,6 +295,9 @@ async fn claude_rungs_run_on_the_bound_claude_code_login() {
     let requests = model.requests.lock().unwrap();
     assert!(requests.iter().any(|r| r.model == "claude-haiku-9"), "haiku resolves to the newest Haiku");
     for request in requests.iter() {
+        let effort = if request.model == "claude-haiku-9" { "low" } else { "high" };
+        assert_eq!(request.thinking.as_deref(), Some("adaptive"));
+        assert_eq!(request.effort.as_deref(), Some(effort), "each rung's effort reaches Claude");
         assert_eq!(request.provider, "anthropic");
         assert_eq!(request.authorization, "Bearer from-claude-code", "every call carries the bound file's token");
     }

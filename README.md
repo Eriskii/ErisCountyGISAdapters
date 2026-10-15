@@ -84,10 +84,11 @@ the URLs).
    results. The rung that succeeds is recorded in the spec and the journal. Each rung runs on
    the provider that serves its model: Codex for the ChatGPT login, the Anthropic API for the
    Claude login. The default ladder comes from the signed-in logins' model listings: with a
-   Claude login, the newest Haiku, then Sonnet, then ChatGPT's flagship at high effort (or Opus
-   without ChatGPT); with ChatGPT alone, its small model at medium effort, then its flagship at
-   medium and high. Claude rungs take no effort: ErisHarness's Anthropic provider sets thinking
-   for the whole provider, and it runs with thinking off.
+   Claude login, the newest Haiku at medium effort, then Sonnet at high, then ChatGPT's flagship
+   (or Opus without ChatGPT) at high; with ChatGPT alone, its small model at medium effort, then
+   its flagship at medium and high. Claude models think adaptively, at the rung's effort; a rung
+   takes only an effort its model lists, and Claude models that think only on a budget (the
+   4.5 generation) cannot run.
 
 Agents' tools are three command lines, each called with one `command` string, split as a
 shell splits words (quotes, backslashes, no expansion) and parsed with clap. Their help is in
@@ -127,7 +128,7 @@ eris-county-gis models                # the logins' models and the default ladde
 eris-county-gis run                   # every county, in the terminal view
 eris-county-gis run --states WI,GA --concurrency 16
 eris-county-gis run --counties 13121 --no-tui --ladder gpt-5-codex-mini:medium,gpt-5-codex:high
-eris-county-gis run --states WI --ladder haiku,sonnet
+eris-county-gis run --states WI --ladder haiku:medium,sonnet:high,opus:max
 eris-county-gis run --recheck
 eris-county-gis validate spec.json 13121
 eris-county-gis status                # the registry by state
