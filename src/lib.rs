@@ -7,6 +7,7 @@ pub mod counties;
 pub mod geom;
 pub mod http;
 pub mod journal;
+pub mod lookup;
 pub mod models;
 pub mod prompts;
 pub mod registry;
