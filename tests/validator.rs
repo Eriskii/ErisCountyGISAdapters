@@ -206,3 +206,34 @@ async fn a_query_arcgis_online_times_out_on_is_asked_again() {
         assert!(report.passed, "{variant}: {}", report.summary());
     }
 }
+
+#[tokio::test]
+async fn a_county_whose_interior_point_has_no_parcels_is_sampled_where_its_parcels_are() {
+    // Parcels only in a corner of Dane County, far from the point it is sampled around.
+    let [x, y] = dane().interior;
+    let corner = (x + 0.2, y - 0.1);
+    assert!(dane().contains(corner.0, corner.1), "the corner is inside the county");
+    let root = support::serve(support::Grid::around(corner.0, corner.1)).await;
+    let report = run(&spec(
+        json!({"kind": "arcgis-feature", "url": format!("{root}/arcgis/good/FeatureServer/0")}),
+        good_fields(),
+    ))
+    .await;
+    assert!(report.passed, "{}", report.summary());
+    let sample = report.checks.iter().find(|c| c.name == "sample").expect("the report says where it sampled");
+    assert!(sample.detail.contains("no parcels near"), "{}", sample.detail);
+}
+
+#[tokio::test]
+async fn a_layer_with_no_parcels_in_the_county_still_fails() {
+    // Parcels only outside Dane County.
+    let elsewhere = counties().get("55001").unwrap().interior;
+    let root = support::serve(support::Grid::around(elsewhere[0], elsewhere[1])).await;
+    let report = run(&spec(
+        json!({"kind": "arcgis-feature", "url": format!("{root}/arcgis/good/FeatureServer/0")}),
+        good_fields(),
+    ))
+    .await;
+    assert!(!report.passed);
+    assert!(failed(&report).contains(&"features"), "{}", report.summary());
+}

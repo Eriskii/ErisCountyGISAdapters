@@ -17,6 +17,9 @@ pub const MIN_FEATURES: usize = 5;
 const MAX_FEATURES: usize = 2000;
 /// Sample box sizes in degrees, tried in turn until one has enough parcels.
 const SAMPLE_SIZES: [f64; 3] = [0.01, 0.04, 0.12];
+/// Parcels asked for across the whole county when its interior point has none nearby, to find
+/// one to sample around.
+const FIND_FEATURES: usize = 100;
 /// Share of polygons that must be valid.
 const VALID_SHARE: f64 = 0.9;
 /// Share of centroids that must lie near the sample box, and inside the county.
@@ -112,6 +115,22 @@ pub async fn validate(runtime: &Runtime, spec: &Spec, county: &County) -> Report
     }
 }
 
+/// The smallest of the sample boxes around `x`,`y` that holds at least [`MIN_FEATURES`] parcels,
+/// or the largest when none does.
+async fn sample_around(runtime: &Runtime, spec: &Spec, x: f64, y: f64) -> anyhow::Result<(Bbox, Fetch)> {
+    let mut sample = None;
+    for size in SAMPLE_SIZES {
+        let bbox = Bbox::around(x, y, size);
+        let fetch = runtime.fetch(spec, bbox, MAX_FEATURES, None).await?;
+        let enough = fetch.parcels.len() >= MIN_FEATURES;
+        sample = Some((bbox, fetch));
+        if enough {
+            break;
+        }
+    }
+    Ok(sample.expect("at least one sample size"))
+}
+
 async fn checks(runtime: &Runtime, spec: &Spec, county: &County) -> Report {
     let mut report = Report::new(spec, county);
     if let Err(error) = spec.check() {
@@ -123,26 +142,48 @@ async fn checks(runtime: &Runtime, spec: &Spec, county: &County) -> Report {
         return report;
     }
 
-    let [x, y] = county.interior;
-    let mut sample: Option<(Bbox, Fetch)> = None;
-    for size in SAMPLE_SIZES {
-        let bbox = Bbox::around(x, y, size);
-        match runtime.fetch(spec, bbox, MAX_FEATURES, None).await {
-            Ok(fetch) => {
-                let enough = fetch.parcels.len() >= MIN_FEATURES;
-                sample = Some((bbox, fetch));
-                if enough {
-                    break;
-                }
-            }
+    let [mut x, mut y] = county.interior;
+    let (mut bbox, mut fetch) = match sample_around(runtime, spec, x, y).await {
+        Ok(sample) => sample,
+        Err(error) => {
+            report.check("query", false, format!("{error:#}"));
+            return report;
+        }
+    };
+    report.check("query", true, format!("{} pages", fetch.pages));
+    // A large, sparse county's interior point can lie far from any parcel: sample around one of
+    // the layer's own parcels inside the county instead.
+    if fetch.parcels.len() < MIN_FEATURES {
+        let found = match runtime.fetch(spec, county.bbox, FIND_FEATURES, Some(FIND_FEATURES as u32)).await {
+            Ok(found) => found,
             Err(error) => {
-                report.check("query", false, format!("{error:#}"));
+                report.check("query", false, format!("looking for parcels across the county: {error:#}"));
                 return report;
+            }
+        };
+        let inside = found.parcels.iter().filter_map(|p| p.geometry.centroid()).find(|c| county.contains(c.x(), c.y()));
+        if let Some(parcel) = inside {
+            match sample_around(runtime, spec, parcel.x(), parcel.y()).await {
+                Ok(sample) => {
+                    report.check(
+                        "sample",
+                        true,
+                        format!(
+                            "no parcels near the county's interior point {x},{y}; sampled around a parcel at {},{}",
+                            parcel.x(),
+                            parcel.y()
+                        ),
+                    );
+                    (x, y) = (parcel.x(), parcel.y());
+                    (bbox, fetch) = sample;
+                }
+                Err(error) => {
+                    report.check("query", false, format!("{error:#}"));
+                    return report;
+                }
             }
         }
     }
-    let (bbox, fetch) = sample.expect("at least one sample size");
-    report.check("query", true, format!("{} pages", fetch.pages));
     report.sample_bbox = Some(bbox);
     report.features = fetch.parcels.len();
     report.pages = fetch.pages;
