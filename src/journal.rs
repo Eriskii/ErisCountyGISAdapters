@@ -101,19 +101,26 @@ pub struct Journal {
 }
 
 impl Journal {
-    pub fn open(path: &Path) -> Result<(Self, Vec<Event>)> {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
+    /// The events at `path`, without writing to it, so a running journal can be read. A line
+    /// cut short, by a kill or by a write under way, is the only one that fails to read; it is
+    /// skipped.
+    pub fn read(path: &Path) -> Result<Vec<Event>> {
         let mut events = Vec::new();
         if let Ok(file) = std::fs::File::open(path) {
             for line in std::io::BufReader::new(file).lines() {
-                // A line cut short by a kill is the only one that fails to read; it is skipped.
                 if let Ok(event) = serde_json::from_str::<Event>(&line?) {
                     events.push(event);
                 }
             }
         }
+        Ok(events)
+    }
+
+    pub fn open(path: &Path) -> Result<(Self, Vec<Event>)> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let events = Self::read(path)?;
         let mut file = std::fs::OpenOptions::new().create(true).append(true).open(path)?;
         // End a line cut short by a kill, so the next event starts a line of its own.
         let bytes = std::fs::read(path)?;

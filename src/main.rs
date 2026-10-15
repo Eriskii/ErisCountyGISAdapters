@@ -98,6 +98,14 @@ enum Command {
     Models,
     /// Where the registry stands, by state.
     Status,
+    /// Field notes from the run, as Markdown: unavailable counties by reason with their
+    /// evidence, what stopped agents grouped by cause, the hosts behind the most trouble, and
+    /// what the run cost.
+    Notes {
+        /// Write them to this file instead of printing them.
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
     /// Rebuild the embedded county file from census.gov.
     RegenerateCounties {
         #[arg(default_value = "data/counties.json.gz")]
@@ -254,6 +262,19 @@ async fn main() -> Result<()> {
             }
         }
         Command::Status => status(&cli.registry)?,
+        Command::Notes { out } => {
+            let counties = Counties::embedded()?;
+            let registry = Registry::open(&cli.registry)?;
+            let events = Journal::read(&cli.state.join("journal.jsonl"))?;
+            let text = eriscountygis::notes::notes(&counties, &registry, &events, now());
+            match out {
+                Some(path) => {
+                    std::fs::write(&path, text)?;
+                    println!("wrote {}", path.display());
+                }
+                None => print!("{text}"),
+            }
+        }
         Command::RegenerateCounties { out } => {
             let count = counties::regenerate(&out).await?;
             println!("wrote {count} counties to {}", out.display());

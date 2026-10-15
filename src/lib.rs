@@ -10,6 +10,7 @@ pub mod http;
 pub mod journal;
 pub mod lookup;
 pub mod models;
+pub mod notes;
 pub mod prompts;
 pub mod registry;
 pub mod runtime;

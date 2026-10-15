@@ -141,6 +141,7 @@ eris-county-gis run --states WI --ladder haiku:medium,sonnet:high,opus:max
 eris-county-gis run --recheck
 eris-county-gis validate spec.json 13121
 eris-county-gis status                # the registry by state
+eris-county-gis notes --out notes.md  # field notes: unavailable counties, what stopped agents, costs
 eris-county-gis import-login ~/.config/ErisMaps/agents/account.json
 eris-county-gis regenerate-counties   # rebuild data/counties.json.gz from census.gov
 ```
