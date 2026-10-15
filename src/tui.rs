@@ -175,8 +175,9 @@ fn draw(
             spans
                 .into_iter()
                 .chain([Span::raw(format!(
-                    " concurrency {} · tokens {} in ({} cached) / {} out",
+                    " concurrency {} · checks {} · tokens {} in ({} cached) / {} out",
                     view.concurrency,
+                    view.checks,
                     human(view.tokens.input),
                     human(view.tokens.cached_input),
                     human(view.tokens.output)

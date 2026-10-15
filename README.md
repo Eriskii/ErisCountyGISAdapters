@@ -73,7 +73,9 @@ the URLs).
 
 1. **States first.** Each selected state with open counties gets one agent looking for a
    statewide layer. When it finishes, every adapter claiming one of the state's open counties is
-   validated against that county, with no model involved.
+   checked against that county, with no model involved. Checks run 12 at a time beside the
+   agents, so they never hold an agent slot, and each result is in the journal: a check that
+   failed is not made again on a later run.
 2. **Counties.** Each county still open gets an agent, briefed with its boundary, the adapters
    its neighbours use (counties often share a host or vendor), adapters that claim it but fail,
    and what earlier attempts tried.
@@ -160,8 +162,8 @@ logins live in `state/accounts/`, owner-only, through [ErisAgentAuth](../../libs
 `ERISCOUNTYGIS_OPENAI_AUTH`, `ERISCOUNTYGIS_CODEX_API`, `ERISCOUNTYGIS_CLAUDE_API` and
 `ERISCOUNTYGIS_CLAUDE_AUTH` point at other servers.
 
-The terminal view shows overall progress, each state, live agents with the tool call each is
-making, the ladder's rungs with their attempts, results and tokens, and the log. Keys: `p`
+The terminal view shows overall progress, each state, the claim checks under way, live agents
+with the tool call each is making, the ladder's rungs with their attempts, results and tokens, and the log. Keys: `p`
 pause and resume, `+`/`-` concurrency, `l` sign in with a device code, `L` sign in in the
 browser, `q` quit (agents resume on the next run). `--no-tui` prints the log and a progress line
 instead, and Ctrl-C stops it the same way.

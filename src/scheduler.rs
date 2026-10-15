@@ -58,6 +58,10 @@ pub enum Status {
     Pending,
 }
 
+/// Claim checks that run at once, beside the agents' slots; each host still takes at most the
+/// HTTP client's few requests at a time.
+const CHECK_SLOTS: usize = 12;
+
 pub struct Scheduler {
     pub work: Arc<Work>,
     harness: Arc<Harness>,
@@ -73,8 +77,11 @@ pub struct Scheduler {
     pub rungs: Mutex<BTreeMap<usize, RungStats>>,
     /// Counties whose adapter stopped passing on a recheck: the spec and why.
     dead: Mutex<HashMap<String, (Spec, String)>>,
-    /// Claims checked this run that failed, so they are not checked again.
+    /// Claims checked that failed, by adapter and county, kept in the journal so no run checks
+    /// them again.
     refused: Mutex<HashSet<(String, String)>>,
+    /// Counties whose claims are being checked now.
+    checking: Mutex<HashSet<String>>,
     wake: Notify,
     /// Where agents' commands would run; they run none.
     empty: PathBuf,
@@ -109,8 +116,16 @@ impl Scheduler {
                         stats.successes += 1;
                     }
                 }
+                Event::Checked { .. } => {}
             }
         }
+        let refused = events
+            .iter()
+            .filter_map(|e| match e {
+                Event::Checked { adapter, fips, passed: false, .. } => Some((adapter.clone(), fips.clone())),
+                _ => None,
+            })
+            .collect();
         Arc::new(Self {
             jobs: Mutex::new(replay(&events)),
             work,
@@ -124,7 +139,8 @@ impl Scheduler {
             running: Mutex::new(HashSet::new()),
             rungs: Mutex::new(rungs),
             dead: Mutex::new(HashMap::new()),
-            refused: Mutex::new(HashSet::new()),
+            refused: Mutex::new(refused),
+            checking: Mutex::new(HashSet::new()),
             wake: Notify::new(),
             empty,
             ready,
@@ -137,6 +153,48 @@ impl Scheduler {
 
     pub fn running_jobs(&self) -> usize {
         self.running.lock().unwrap().len()
+    }
+
+    /// Counties whose claims are being checked now; these hold no agent slot.
+    pub fn checks_running(&self) -> usize {
+        self.checking.lock().unwrap().len()
+    }
+
+    /// Whether an adapter claims the open county without having been checked there yet.
+    fn claim_pending(&self, fips: &str) -> bool {
+        let Some(county) = self.work.counties.get(fips) else { return false };
+        let claims = self.work.registry.lock().unwrap().unverified_claims(fips, &county.state);
+        let refused = self.refused.lock().unwrap();
+        claims.iter().any(|spec| !refused.contains(&(spec.id.clone(), fips.to_owned())))
+    }
+
+    /// Selected open counties with a claim to check, whose state has settled, not being checked.
+    fn checks_due(&self, statewide: bool) -> Vec<String> {
+        let checking = self.checking.lock().unwrap().clone();
+        self.counties
+            .iter()
+            .filter(|f| !checking.contains(*f) && self.open(f))
+            .filter(|f| {
+                !statewide
+                    || self.state_settled(&self.work.counties.get(f).map(|c| c.state.clone()).unwrap_or_default())
+            })
+            .filter(|f| self.claim_pending(f))
+            .cloned()
+            .collect()
+    }
+
+    /// Starts checks of claims, up to [`CHECK_SLOTS`] at once, beside the agents' slots.
+    fn start_checks(self: &Arc<Self>, statewide: bool) {
+        let free = CHECK_SLOTS.saturating_sub(self.checks_running());
+        for fips in self.checks_due(statewide).into_iter().take(free) {
+            self.checking.lock().unwrap().insert(fips.clone());
+            let this = self.clone();
+            tokio::spawn(async move {
+                this.verify_claims(&fips).await;
+                this.checking.lock().unwrap().remove(&fips);
+                this.poke();
+            });
+        }
     }
 
     /// The rung the job's next attempt runs on, or none once the ladder is used up.
@@ -212,7 +270,11 @@ impl Scheduler {
         }
         for fips in &self.counties {
             let job = Job::County(fips.clone());
-            if running.contains(&job) || !self.open(fips) {
+            if running.contains(&job) || !self.open(fips) || self.checking.lock().unwrap().contains(fips) {
+                continue;
+            }
+            // A county an adapter claims is checked first, outside the agents' slots.
+            if self.claim_pending(fips) {
                 continue;
             }
             if settings.statewide {
@@ -221,7 +283,8 @@ impl Scheduler {
                     continue;
                 }
             }
-            if self.exhausted(&job) && !settings.retry_failed {
+            // `--retry-failed` resets used-up counties once, as the run starts.
+            if self.exhausted(&job) {
                 continue;
             }
             return Some(job);
@@ -247,6 +310,8 @@ impl Scheduler {
                 break;
             }
             if !self.paused.load(Ordering::SeqCst) {
+                let statewide = self.settings.lock().unwrap().statewide;
+                self.start_checks(statewide);
                 let concurrency = self.settings.lock().unwrap().concurrency;
                 while self.running_jobs() < concurrency {
                     let Some(job) = self.next_job() else { break };
@@ -268,7 +333,12 @@ impl Scheduler {
                     });
                 }
             }
-            if self.running_jobs() == 0 && !self.paused.load(Ordering::SeqCst) && self.next_job().is_none() {
+            if self.running_jobs() == 0
+                && self.checks_running() == 0
+                && !self.paused.load(Ordering::SeqCst)
+                && self.next_job().is_none()
+                && self.checks_due(self.settings.lock().unwrap().statewide).is_empty()
+            {
                 self.work.log("every selected job is settled");
                 break;
             }
@@ -308,9 +378,6 @@ impl Scheduler {
                 if let Err(error) = this.clone().watch(&job, &agent, rung).await {
                     this.work.log(format!("{}: {error:#}", job.label()));
                 }
-                if let Job::State(state) = &job {
-                    this.verify_state(state).await;
-                }
                 this.running.lock().unwrap().remove(&job);
                 this.poke();
             });
@@ -339,17 +406,7 @@ impl Scheduler {
 
     async fn run_job(self: Arc<Self>, job: &Job) -> Result<()> {
         match job {
-            Job::County(fips) => {
-                if self.verify_claims(fips).await {
-                    return Ok(());
-                }
-                self.attempt(job).await
-            }
-            Job::State(state) => {
-                self.attempt(job).await?;
-                self.verify_state(state).await;
-                Ok(())
-            }
+            Job::County(_) | Job::State(_) => self.attempt(job).await,
         }
     }
 
@@ -364,6 +421,12 @@ impl Scheduler {
                 continue;
             }
             let report = validate::validate(&self.work.runtime, &spec, county).await;
+            let _ = self.journal.append(&Event::Checked {
+                at: now(),
+                adapter: spec.id.clone(),
+                fips: fips.to_owned(),
+                passed: report.passed,
+            });
             if report.passed {
                 let _ = self.work.registry.lock().unwrap().verified(&spec.id, fips, now());
                 self.work.log(format!("county {fips}: covered by {}", spec.id));
@@ -372,22 +435,6 @@ impl Scheduler {
             self.refused.lock().unwrap().insert(key);
         }
         false
-    }
-
-    /// After a state's search: checks its statewide adapter against each of its open counties.
-    async fn verify_state(&self, state: &str) {
-        let open: Vec<String> = self
-            .counties
-            .iter()
-            .filter(|f| self.work.counties.get(f).is_some_and(|c| c.state == state) && self.open(f))
-            .cloned()
-            .collect();
-        let concurrency = self.settings.lock().unwrap().concurrency.max(4);
-        futures_util::stream::iter(open)
-            .for_each_concurrent(concurrency, |fips| async move {
-                self.verify_claims(&fips).await;
-            })
-            .await;
     }
 
     /// One attempt at a job on its next rung, start to end.

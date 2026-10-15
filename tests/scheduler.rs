@@ -248,9 +248,10 @@ async fn a_stopped_run_resumes_its_agent_where_it_stood() {
     let all = events(dir.path());
     let agents: Vec<(&str, &str)> = all
         .iter()
-        .map(|e| match e {
-            Event::Started { agent, .. } => ("started", agent.as_str()),
-            Event::Finished { agent, .. } => ("finished", agent.as_str()),
+        .filter_map(|e| match e {
+            Event::Started { agent, .. } => Some(("started", agent.as_str())),
+            Event::Finished { agent, .. } => Some(("finished", agent.as_str())),
+            Event::Checked { .. } => None,
         })
         .collect();
     assert_eq!(agents, [("started", started[0].as_str()), ("finished", started[0].as_str())]);
@@ -353,4 +354,78 @@ async fn stopping_a_run_stops_a_validation_under_way() {
     tokio::time::timeout(Duration::from_secs(10), run.stop()).await.expect("stopping waits for no validation");
     assert!(started.elapsed() < Duration::from_secs(5));
     runner.abort();
+}
+
+/// A statewide adapter for Alabama read from `url`, saved unverified, as a state's search
+/// leaves it.
+fn claim_alabama(dir: &Path, url: String) {
+    let spec: eriscountygis::spec::Spec = serde_json::from_value(json!({
+        "version": 1, "id": "al-statewide", "publisher": "Alabama GIS",
+        "source": {"kind": "arcgis-feature", "url": url},
+        "coverage": {"states": ["AL"]}, "fields": {"apn": "PARCELNO"},
+    }))
+    .unwrap();
+    Registry::open(&dir.join("registry")).unwrap().save_adapter(spec).unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_slow_statewide_check_does_not_hold_back_county_agents() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = support::serve(support::Grid::around_all(&interiors(&["13121"]))).await;
+    claim_alabama(dir.path(), format!("{root}/arcgis/stalls/FeatureServer/0"));
+    let spec = good_spec(&root, json!({"counties": ["13121"]}));
+    let brain: Brain = Arc::new(move |request: &Request| diligent(request, "spec", &spec));
+    let model = Model::start(brain).await;
+    // One slot: Autauga County, AL is checked against the stalled statewide layer, and Fulton
+    // County, GA, which nothing claims, gets its agent all the same.
+    let run = scheduler(dir.path(), &model, vec!["01001".into(), "13121".into()], false).await;
+    run.settings.lock().unwrap().concurrency = 1;
+    let runner = {
+        let run = run.clone();
+        tokio::spawn(async move { run.run().await })
+    };
+    let covered = async {
+        loop {
+            if Registry::open(&dir.path().join("registry")).unwrap().index.contains_key("13121") {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    };
+    tokio::time::timeout(Duration::from_secs(30), covered)
+        .await
+        .expect("Fulton County is covered while the check stalls");
+    assert!(run.checks_running() >= 1, "the Alabama check is still under way");
+    run.stop().await;
+    runner.abort();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_failed_statewide_check_is_not_repeated_after_a_restart() {
+    let dir = tempfile::tempdir().unwrap();
+    // The statewide layer has parcels only in Georgia, so it fails for Autauga County, AL.
+    let root = support::serve(support::Grid::around_all(&interiors(&["13121"]))).await;
+    claim_alabama(dir.path(), format!("{root}/arcgis/good/FeatureServer/0"));
+    let brain: Brain = Arc::new(|_: &Request| Reply::Says("Autauga County publishes only a viewer.".into()));
+    let model = Model::start(brain).await;
+    let run = scheduler(dir.path(), &model, vec!["01001".into()], false).await;
+    tokio::time::timeout(Duration::from_secs(60), run.run()).await.unwrap().unwrap();
+    assert!(
+        events(dir.path()).iter().any(|e| matches!(e, Event::Checked { adapter, fips, passed: false, .. }
+            if adapter == "al-statewide" && fips == "01001")),
+        "the failed check is in the journal"
+    );
+    drop(run);
+
+    // Were the check made again, it would wait on the stalled server.
+    let path = dir.path().join("registry/adapters/al-statewide.json");
+    let text = std::fs::read_to_string(&path).unwrap().replace("/arcgis/good/", "/arcgis/stalls/");
+    std::fs::write(&path, text).unwrap();
+    let again = scheduler(dir.path(), &model, vec!["01001".into()], false).await;
+    again.settings.lock().unwrap().retry_failed = true;
+    tokio::time::timeout(Duration::from_secs(30), again.run()).await.expect("no check is repeated").unwrap();
+    let checks = events(dir.path()).iter().filter(|e| matches!(e, Event::Checked { .. })).count();
+    assert_eq!(checks, 1, "the restart made no check");
+    let attempts = events(dir.path()).iter().filter(|e| matches!(e, Event::Started { .. })).count();
+    assert_eq!(attempts, 4, "the retry climbs the ladder once more, then the run ends");
 }

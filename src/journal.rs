@@ -78,6 +78,13 @@ pub enum Event {
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
         tools: BTreeMap<String, Tokens>,
     },
+    /// An adapter claiming a county it was not verified for was checked there, with no agent.
+    Checked {
+        at: u64,
+        adapter: String,
+        fips: String,
+        passed: bool,
+    },
 }
 
 /// A job as the journal tells it.
@@ -173,6 +180,7 @@ pub fn replay(events: &[Event]) -> BTreeMap<Job, JobHistory> {
                 }
                 history.finished = Some(outcome.clone());
             }
+            Event::Checked { .. } => {}
         }
     }
     jobs

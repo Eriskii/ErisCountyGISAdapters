@@ -71,6 +71,7 @@ pub fn notes(counties: &Counties, registry: &Registry, events: &[Event], now: u6
                     last.insert(fips, Last { rung: *rung, outcome });
                 }
             }
+            Event::Checked { .. } => {}
         }
     }
 

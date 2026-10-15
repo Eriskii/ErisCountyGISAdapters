@@ -59,6 +59,8 @@ pub struct View {
     pub log: Vec<String>,
     pub paused: bool,
     pub concurrency: usize,
+    /// Counties whose claims are being checked, beside the agents.
+    pub checks: usize,
     pub tokens: Tokens,
 }
 
@@ -133,6 +135,7 @@ impl View {
             log,
             paused: scheduler.paused.load(Ordering::SeqCst),
             concurrency: scheduler.settings.lock().unwrap().concurrency,
+            checks: scheduler.checks_running(),
             tokens,
         }
     }
