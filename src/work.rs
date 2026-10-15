@@ -106,14 +106,14 @@ impl Work {
         }
     }
 
-    /// Validates `spec` against each sample county of `job`. A state's spec passes when at
+    /// Validates `spec` against each sample county of `job`, all at once. A state's spec passes when at
     /// least two of three samples pass, since statewide layers sometimes miss a county.
     pub async fn validate_for(&self, job: &Job, spec: &Spec) -> (bool, Vec<Report>) {
         let counties = self.sample_counties(job);
-        let mut reports = Vec::new();
-        for county in &counties {
-            reports.push(validate::validate(&self.runtime, spec, county).await);
-        }
+        let reports: Vec<Report> = futures_util::future::join_all(
+            counties.iter().map(|county| validate::validate(&self.runtime, spec, county)),
+        )
+        .await;
         let passed = reports.iter().filter(|r| r.passed).count();
         let ok = match job {
             Job::County(_) => passed == 1,

@@ -5,7 +5,7 @@ mod support;
 
 use eriscountygis::counties::{Counties, County};
 use eriscountygis::http::{Http, Limits};
-use eriscountygis::runtime::Runtime;
+use eriscountygis::runtime::{Runtime, VALIDATE_WITHIN};
 use eriscountygis::spec::Spec;
 use eriscountygis::validate::{Report, validate};
 use serde_json::{Value, json};
@@ -25,7 +25,11 @@ async fn server() -> String {
 }
 
 fn runtime(cache: &std::path::Path) -> Runtime {
-    Runtime { http: Http::new(Limits { allow_private: true, ..Limits::default() }).unwrap(), cache: cache.to_owned() }
+    Runtime {
+        http: Http::new(Limits { allow_private: true, ..Limits::default() }).unwrap(),
+        cache: cache.to_owned(),
+        validate_within: VALIDATE_WITHIN,
+    }
 }
 
 fn spec(source: Value, fields: Value) -> Spec {
@@ -158,4 +162,47 @@ async fn a_county_outside_the_coverage_fails() {
         spec(json!({"kind": "arcgis-feature", "url": format!("{root}/arcgis/good/FeatureServer/0")}), good_fields());
     spec.coverage = eriscountygis::spec::Coverage::States(vec!["MN".into()]);
     assert_eq!(failed(&run(&spec).await), ["coverage"]);
+}
+
+#[tokio::test]
+async fn a_sample_that_fits_one_page_is_paged_again_in_halves_of_the_same_box() {
+    let root = server().await;
+    let report = run(&spec(
+        json!({"kind": "arcgis-feature", "url": format!("{root}/arcgis/whole-pages/FeatureServer/0"),
+            "page_size": 2000}),
+        good_fields(),
+    ))
+    .await;
+    assert!(report.passed, "{}", report.summary());
+    let paging = report.checks.iter().find(|c| c.name == "paging").unwrap();
+    let half = report.features.div_ceil(2);
+    assert!(paging.detail.starts_with(&format!("pages of {half}:")), "{}", paging.detail);
+}
+
+#[tokio::test]
+async fn validation_that_runs_too_long_fails_on_time() {
+    let root = server().await;
+    let cache = tempfile::tempdir().unwrap();
+    let mut runtime = runtime(cache.path());
+    runtime.validate_within = std::time::Duration::from_secs(1);
+    let spec =
+        spec(json!({"kind": "arcgis-feature", "url": format!("{root}/arcgis/stalls/FeatureServer/0")}), good_fields());
+    let started = std::time::Instant::now();
+    let report = validate(&runtime, &spec, dane()).await;
+    assert!(started.elapsed() < std::time::Duration::from_secs(5));
+    assert_eq!(failed(&report), ["time"]);
+    assert!(report.summary().contains("1 s"), "{}", report.summary());
+}
+
+#[tokio::test]
+async fn a_query_arcgis_online_times_out_on_is_asked_again() {
+    let root = server().await;
+    for variant in ["flaky", "flaky-gateway"] {
+        let report = run(&spec(
+            json!({"kind": "arcgis-feature", "url": format!("{root}/arcgis/{variant}/FeatureServer/0")}),
+            good_fields(),
+        ))
+        .await;
+        assert!(report.passed, "{variant}: {}", report.summary());
+    }
 }

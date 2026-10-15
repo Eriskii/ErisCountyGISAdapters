@@ -1,0 +1,245 @@
+{
+  "version": 1,
+  "counties": {
+    "06001": [
+      "ca-statewide"
+    ],
+    "06019": [
+      "ca-statewide"
+    ],
+    "06057": [
+      "ca-statewide"
+    ],
+    "06115": [
+      "ca-statewide"
+    ],
+    "13121": [
+      "ga-fulton"
+    ],
+    "47095": [
+      "tn-statewide"
+    ],
+    "47157": [
+      "tn-shelby"
+    ],
+    "47189": [
+      "tn-statewide"
+    ],
+    "55001": [
+      "wi-statewide"
+    ],
+    "55003": [
+      "wi-ashland"
+    ],
+    "55005": [
+      "wi-statewide"
+    ],
+    "55007": [
+      "wi-statewide"
+    ],
+    "55009": [
+      "wi-statewide"
+    ],
+    "55011": [
+      "wi-statewide"
+    ],
+    "55013": [
+      "wi-statewide"
+    ],
+    "55015": [
+      "wi-statewide"
+    ],
+    "55017": [
+      "wi-statewide"
+    ],
+    "55019": [
+      "wi-clark"
+    ],
+    "55021": [
+      "wi-statewide"
+    ],
+    "55023": [
+      "wi-statewide"
+    ],
+    "55025": [
+      "wi-statewide"
+    ],
+    "55027": [
+      "wi-statewide"
+    ],
+    "55029": [
+      "wi-statewide"
+    ],
+    "55031": [
+      "wi-douglas"
+    ],
+    "55033": [
+      "wi-statewide"
+    ],
+    "55035": [
+      "wi-statewide"
+    ],
+    "55037": [
+      "wi-statewide"
+    ],
+    "55039": [
+      "wi-statewide"
+    ],
+    "55041": [
+      "wi-statewide"
+    ],
+    "55043": [
+      "wi-statewide"
+    ],
+    "55045": [
+      "wi-statewide"
+    ],
+    "55047": [
+      "wi-statewide"
+    ],
+    "55049": [
+      "wi-statewide"
+    ],
+    "55051": [
+      "wi-iron"
+    ],
+    "55053": [
+      "wi-jackson"
+    ],
+    "55055": [
+      "wi-statewide"
+    ],
+    "55057": [
+      "wi-statewide"
+    ],
+    "55059": [
+      "wi-statewide"
+    ],
+    "55061": [
+      "wi-statewide"
+    ],
+    "55063": [
+      "wi-statewide"
+    ],
+    "55065": [
+      "wi-statewide"
+    ],
+    "55067": [
+      "wi-langlade"
+    ],
+    "55069": [
+      "wi-statewide"
+    ],
+    "55071": [
+      "wi-statewide"
+    ],
+    "55073": [
+      "wi-statewide"
+    ],
+    "55075": [
+      "wi-statewide"
+    ],
+    "55077": [
+      "wi-statewide"
+    ],
+    "55078": [
+      "wi-menominee"
+    ],
+    "55079": [
+      "wi-milwaukee"
+    ],
+    "55081": [
+      "wi-statewide"
+    ],
+    "55083": [
+      "wi-statewide"
+    ],
+    "55085": [
+      "wi-statewide"
+    ],
+    "55087": [
+      "wi-statewide"
+    ],
+    "55089": [
+      "wi-statewide"
+    ],
+    "55091": [
+      "wi-statewide"
+    ],
+    "55093": [
+      "wi-statewide"
+    ],
+    "55095": [
+      "wi-statewide"
+    ],
+    "55097": [
+      "wi-statewide"
+    ],
+    "55099": [
+      "wi-statewide"
+    ],
+    "55101": [
+      "wi-statewide"
+    ],
+    "55103": [
+      "wi-statewide"
+    ],
+    "55105": [
+      "wi-statewide"
+    ],
+    "55107": [
+      "wi-statewide"
+    ],
+    "55109": [
+      "wi-statewide"
+    ],
+    "55111": [
+      "wi-statewide"
+    ],
+    "55113": [
+      "wi-sawyer"
+    ],
+    "55115": [
+      "wi-statewide"
+    ],
+    "55117": [
+      "wi-statewide"
+    ],
+    "55119": [
+      "wi-statewide"
+    ],
+    "55121": [
+      "wi-statewide"
+    ],
+    "55123": [
+      "wi-statewide"
+    ],
+    "55125": [
+      "wi-vilas"
+    ],
+    "55127": [
+      "wi-statewide"
+    ],
+    "55129": [
+      "wi-statewide"
+    ],
+    "55131": [
+      "wi-statewide"
+    ],
+    "55133": [
+      "wi-statewide"
+    ],
+    "55135": [
+      "wi-statewide"
+    ],
+    "55137": [
+      "wi-statewide"
+    ],
+    "55139": [
+      "wi-statewide"
+    ],
+    "55141": [
+      "wi-statewide"
+    ]
+  }
+}

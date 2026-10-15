@@ -63,10 +63,22 @@ pub struct Fetch {
     pub first_url: String,
 }
 
+/// How ArcGIS Online answers a query that timed out inside it. Such a query, and one its gateway
+/// gave up on (502, 503, 504), is asked again after each of [`ARCGIS_RETRIES`]' pauses before
+/// it counts as failed.
+const TIMED_OUT: &str = "Unable to perform query";
+const ARCGIS_RETRIES: [std::time::Duration; 2] = [std::time::Duration::from_secs(2), std::time::Duration::from_secs(5)];
+
+/// How long one county's validation may take by default: a source slower than this is too slow
+/// to read parcels from.
+pub const VALIDATE_WITHIN: std::time::Duration = std::time::Duration::from_secs(120);
+
 pub struct Runtime {
     pub http: Http,
     /// Where bulk downloads are kept between validations.
     pub cache: PathBuf,
+    /// The longest one county's validation may take.
+    pub validate_within: std::time::Duration,
 }
 
 impl Runtime {
@@ -87,6 +99,21 @@ impl Runtime {
             fetch.attribute_names = first.attributes.keys().cloned().collect();
         }
         Ok(fetch)
+    }
+
+    /// One page of an ArcGIS query, asked again while the server timed out answering it.
+    async fn arcgis_page(&self, url: &str) -> Result<Value> {
+        let mut pauses = ARCGIS_RETRIES.iter();
+        loop {
+            let fetched = self.http.get(url, PAGE_CAP).await?;
+            let gateway = matches!(fetched.status, 502..=504);
+            let body = if gateway { Value::Null } else { fetched.json().unwrap_or(Value::Null) };
+            let timed_out = body["error"]["message"].as_str().is_some_and(|m| m.starts_with(TIMED_OUT));
+            match pauses.next() {
+                Some(pause) if gateway || timed_out => tokio::time::sleep(*pause).await,
+                _ => return self.http.json_answer(url, fetched),
+            }
+        }
     }
 
     async fn arcgis(
@@ -119,7 +146,7 @@ impl Runtime {
             if fetch.first_url.is_empty() {
                 fetch.first_url = query.to_string();
             }
-            let body = self.http.get_json(query.as_str(), PAGE_CAP).await?;
+            let body = self.arcgis_page(query.as_str()).await?;
             if let Some(error) = body.get("error") {
                 bail!(
                     "the ArcGIS server refused the query: {} {}",

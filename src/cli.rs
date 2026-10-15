@@ -114,6 +114,17 @@ pub fn grep(text: &str, pattern: &str, context: usize) -> Result<String, String>
     Ok(out)
 }
 
+/// Runs a command until it finishes or the agent is stopped, as when the run shuts down.
+pub async fn until_stopped(
+    context: &erisharness::tools::ToolContext,
+    command: impl std::future::Future<Output = erisharness::tools::ToolOutput>,
+) -> erisharness::tools::ToolOutput {
+    tokio::select! {
+        output = command => output,
+        _ = context.cancel.cancelled() => erisharness::tools::ToolOutput::error("stopped: the run is shutting down"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

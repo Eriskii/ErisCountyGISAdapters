@@ -11,7 +11,7 @@ use eriscountygis::http::{Http, Limits};
 use eriscountygis::journal::Journal;
 use eriscountygis::models::{ANTHROPIC, CODEX, Endpoints};
 use eriscountygis::registry::{Registry, Standing, now};
-use eriscountygis::runtime::Runtime;
+use eriscountygis::runtime::{Runtime, VALIDATE_WITHIN};
 use eriscountygis::scheduler::{Scheduler, Settings};
 use eriscountygis::spec::Spec;
 use eriscountygis::view::View;
@@ -173,7 +173,11 @@ async fn listed_models(accounts: &Accounts) -> Vec<models::Model> {
 }
 
 fn runtime(state: &Path) -> Result<Runtime> {
-    Ok(Runtime { http: Http::new(Limits::default())?, cache: state.join("downloads") })
+    Ok(Runtime {
+        http: Http::new(Limits::default())?,
+        cache: state.join("downloads"),
+        validate_within: VALIDATE_WITHIN,
+    })
 }
 
 #[tokio::main]

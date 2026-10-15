@@ -95,13 +95,28 @@ async fn arcgis(
         return axum::Json(json!({"error": {"code": 400, "message": "Invalid query parameters", "details": []}}))
             .into_response();
     }
+    // Like ArcGIS Online timing out inside, or its gateway giving up: every other query fails,
+    // and asking again works.
+    static FLAKY: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    if variant.starts_with("flaky") && FLAKY.fetch_add(1, std::sync::atomic::Ordering::SeqCst).is_multiple_of(2) {
+        if variant == "flaky-gateway" {
+            return (axum::http::StatusCode::GATEWAY_TIMEOUT, "504 Gateway Time-out").into_response();
+        }
+        return axum::Json(
+            json!({"error": {"code": 400, "message": "Unable to perform query. Please check your parameters.", "details": []}}),
+        )
+        .into_response();
+    }
+    if variant == "stalls" {
+        tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+    }
     if q.get("returnCountOnly").is_some_and(|v| v == "true") {
         return axum::Json(json!({"count": grid.parcels.len()})).into_response();
     }
     let all = grid.within(bbox_param(&q["geometry"]));
     let offset: usize =
         if variant == "ignores-offset" { 0 } else { q.get("resultOffset").map_or(0, |s| s.parse().unwrap()) };
-    let max_record = 50usize;
+    let max_record = if variant == "whole-pages" { 2000 } else { 50usize };
     let count = q.get("resultRecordCount").map_or(max_record, |s| s.parse::<usize>().unwrap().min(max_record));
     let page: Vec<&Parcel> = all.iter().skip(offset).take(count).copied().collect();
     let exceeded = offset + page.len() < all.len();

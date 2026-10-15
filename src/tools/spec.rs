@@ -292,7 +292,7 @@ impl Tool for SpecTool {
     fn call<'a>(&'a self, context: &'a ToolContext, args: Value) -> BoxFuture<'a, ToolOutput> {
         Box::pin(async move {
             match cli::line(&args, self.program(), "show") {
-                Ok(line) => self.run(&context.agent, &line).await,
+                Ok(line) => cli::until_stopped(context, self.run(&context.agent, &line)).await,
                 Err(output) => output,
             }
         })

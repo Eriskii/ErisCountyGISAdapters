@@ -7,7 +7,7 @@ use eriscountygis::counties::Counties;
 use eriscountygis::http::{Http, Limits};
 use eriscountygis::journal::Job;
 use eriscountygis::registry::Registry;
-use eriscountygis::runtime::Runtime;
+use eriscountygis::runtime::{Runtime, VALIDATE_WITHIN};
 use eriscountygis::tools::{Arcgis, SpecTool, Web};
 use eriscountygis::work::{AgentJob, Work};
 use erisharness::tools::{Content, Tool, ToolOutput};
@@ -21,6 +21,7 @@ fn work(dir: &std::path::Path, job: Job) -> Arc<Work> {
         runtime: Runtime {
             http: Http::new(Limits { allow_private: true, ..Limits::default() }).unwrap(),
             cache: dir.join("cache"),
+            validate_within: VALIDATE_WITHIN,
         },
         agents: Mutex::default(),
         validate_budget: 3,

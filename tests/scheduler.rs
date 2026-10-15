@@ -12,7 +12,7 @@ use eriscountygis::http::{Http, Limits};
 use eriscountygis::journal::{Event, Journal, Outcome};
 use eriscountygis::models::{self, CODEX, Endpoints, Rung};
 use eriscountygis::registry::Registry;
-use eriscountygis::runtime::Runtime;
+use eriscountygis::runtime::{Runtime, VALIDATE_WITHIN};
 use eriscountygis::scheduler::{Scheduler, Settings};
 use eriscountygis::tools;
 use eriscountygis::work::Work;
@@ -57,6 +57,7 @@ async fn scheduler_on(
         runtime: Runtime {
             http: Http::new(Limits { allow_private: true, ..Limits::default() }).unwrap(),
             cache: dir.join("cache"),
+            validate_within: VALIDATE_WITHIN,
         },
         agents: Mutex::default(),
         validate_budget: 3,
@@ -301,4 +302,34 @@ async fn claude_rungs_run_on_the_bound_claude_code_login() {
         assert_eq!(request.provider, "anthropic");
         assert_eq!(request.authorization, "Bearer from-claude-code", "every call carries the bound file's token");
     }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn stopping_a_run_stops_a_validation_under_way() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = support::serve(support::Grid::around_all(&interiors(&["55025"]))).await;
+    let stalled = json!({
+        "id": "stalled", "publisher": "Slow GIS",
+        "source": {"kind": "arcgis-feature", "url": format!("{root}/arcgis/stalls/FeatureServer/0")},
+        "coverage": {"counties": ["55025"]}, "fields": {"apn": "PARCELNO"},
+    });
+    let brain: Brain = Arc::new(move |request: &Request| {
+        if request.outputs.is_empty() {
+            Reply::Calls("spec".into(), json!({"command": format!("validate {}", quoted(&stalled.to_string()))}))
+        } else {
+            Reply::Hangs
+        }
+    });
+    let model = Model::start(brain).await;
+    let run = scheduler(dir.path(), &model, vec!["55025".into()], false).await;
+    let runner = {
+        let run = run.clone();
+        tokio::spawn(async move { run.run().await })
+    };
+    // The agent is inside its validate call, waiting on the stalled server.
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let started = std::time::Instant::now();
+    tokio::time::timeout(Duration::from_secs(10), run.stop()).await.expect("stopping waits for no validation");
+    assert!(started.elapsed() < Duration::from_secs(5));
+    runner.abort();
 }

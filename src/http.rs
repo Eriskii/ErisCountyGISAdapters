@@ -176,6 +176,11 @@ impl Http {
     /// GETs JSON, failing on an error status.
     pub async fn get_json(&self, url: &str, cap: usize) -> Result<Value> {
         let fetched = self.get(url, cap).await?;
+        self.json_answer(url, fetched)
+    }
+
+    /// The JSON of an answer from `url`, failing on an error status.
+    pub fn json_answer(&self, url: &str, fetched: Fetched) -> Result<Value> {
         ensure!(
             (200..300).contains(&fetched.status),
             "{url} answered {}: {}",

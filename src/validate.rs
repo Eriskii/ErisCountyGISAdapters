@@ -91,7 +91,28 @@ fn share(count: usize, of: usize) -> f64 {
 }
 
 /// Runs `spec` for `county` and reports every check.
+/// Validates `spec` for `county`, failing the `time` check when that takes longer than the
+/// runtime allows.
 pub async fn validate(runtime: &Runtime, spec: &Spec, county: &County) -> Report {
+    match tokio::time::timeout(runtime.validate_within, checks(runtime, spec, county)).await {
+        Ok(report) => report,
+        Err(_) => {
+            let mut report = Report::new(spec, county);
+            report.check(
+                "time",
+                false,
+                format!(
+                    "validation took longer than {} s: the source answers too slowly to read parcels from",
+                    runtime.validate_within.as_secs()
+                ),
+            );
+            report.passed = false;
+            report
+        }
+    }
+}
+
+async fn checks(runtime: &Runtime, spec: &Spec, county: &County) -> Report {
     let mut report = Report::new(spec, county);
     if let Err(error) = spec.check() {
         report.check("spec", false, format!("{error:#}"));
@@ -207,19 +228,20 @@ pub async fn validate(runtime: &Runtime, spec: &Spec, county: &County) -> Report
     if !matches!(spec.source, Source::BulkDownload { .. }) {
         if fetch.pages > 1 {
             report.check("paging", true, format!("{} pages read", fetch.pages));
-        } else if n >= 3 {
-            let page = (n / 3).max(1) as u32;
-            match runtime.fetch(spec, bbox, n + page as usize, Some(page)).await {
+        } else {
+            // The sample came in one page: read the same box again in two halves. A larger box
+            // costs some servers far more than smaller pages do.
+            let page = n.div_ceil(2);
+            match runtime.fetch(spec, bbox, n + page, Some(page as u32)).await {
                 Ok(paged) => {
                     let distinct: std::collections::HashSet<String> =
                         paged.parcels.iter().map(|p| Value::Object(p.attributes.clone()).to_string()).collect();
-                    let ok = paged.pages > 1 && distinct.len() + n / 50 >= n && paged.parcels.len() <= n + n / 50;
+                    let read = paged.parcels.len();
                     report.check(
                         "paging",
-                        ok,
+                        paged.pages > 1 && distinct.len() + n / 50 >= n && read <= n + n / 50,
                         format!(
-                            "pages of {page}: {} parcels ({} distinct) in {} pages, against {n} in one",
-                            paged.parcels.len(),
+                            "pages of {page}: {read} parcels ({} distinct) in {} pages, against {n} in one",
                             distinct.len(),
                             paged.pages
                         ),
