@@ -204,9 +204,38 @@ pub async fn serve(grid: Grid) -> String {
         .route("/arcgis/{variant}/FeatureServer/0", get(layer))
         .route("/wfs", get(wfs))
         .route("/ogc/collections/parcels/items", get(ogc))
+        .route("/ddg", get(duckduckgo))
+        .route("/page", get(page))
         .with_state(Arc::new(grid));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
     format!("http://{address}")
+}
+
+/// Words no answer may carry: they stand for the bulk of a page, which stays out of agents'
+/// context.
+pub const PAGE_FILLER: &str = "LONG-PAGE-BODY";
+
+/// A county's GIS page: a link to its parcel service among a long body.
+async fn page() -> Response {
+    let filler = format!("<p>{PAGE_FILLER} about county offices and meeting minutes.</p>").repeat(2_000);
+    axum::response::Html(format!(
+        "<html><body><h1>County GIS</h1>{filler}<a href=\"/arcgis/good/FeatureServer/0\">Parcels service</a></body></html>"
+    ))
+    .into_response()
+}
+
+/// DuckDuckGo's HTML results page, with ten results.
+async fn duckduckgo(Query(q): Query<HashMap<String, String>>) -> Response {
+    let query = q.get("q").cloned().unwrap_or_default();
+    let results: String = (0..10)
+        .map(|i| {
+            format!(
+                "<div class=\"result\"><a class=\"result__a\" href=\"//duckduckgo.com/l/?uddg=https%3A%2F%2Fcounty{i}.example.gov%2Fgis\">County {i} GIS for {query}</a>\
+                 <a class=\"result__snippet\" href=\"x\">Parcel maps of county {i}.</a></div>"
+            )
+        })
+        .collect();
+    axum::response::Html(format!("<html><body>{results}</body></html>")).into_response()
 }

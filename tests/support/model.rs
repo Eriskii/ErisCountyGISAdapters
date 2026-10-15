@@ -29,6 +29,8 @@ pub struct Request {
     /// What the request asks of the model's thinking: its `thinking` type and effort, if any.
     pub thinking: Option<String>,
     pub effort: Option<String>,
+    /// Whether the request offers Claude's server-side web search, as `web search` does.
+    pub web_search: bool,
     pub instructions: String,
     /// The user messages, in order.
     pub user: Vec<String>,
@@ -82,6 +84,7 @@ fn read_anthropic(body: &Value, authorization: String) -> Request {
         model: body["model"].as_str().unwrap_or_default().to_owned(),
         thinking: body["thinking"]["type"].as_str().map(str::to_owned),
         effort: body["output_config"]["effort"].as_str().map(str::to_owned),
+        web_search: body["tools"].as_array().into_iter().flatten().any(|t| t["type"] == "web_search_20250305"),
         instructions,
         user,
         outputs,
@@ -112,6 +115,7 @@ fn read(body: &Value, authorization: String) -> Request {
         model: body["model"].as_str().unwrap_or_default().to_owned(),
         thinking: None,
         effort: body["reasoning"]["effort"].as_str().map(str::to_owned),
+        web_search: false,
         instructions: body["instructions"].as_str().unwrap_or_default().to_owned(),
         user,
         outputs,
@@ -128,8 +132,25 @@ static CALLS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0
 
 async fn respond_anthropic(State(shared): State<Shared>, headers: HeaderMap, body: String) -> Response {
     let request = read_anthropic(&serde_json::from_str(&body).unwrap(), authorization(&headers));
+    let web_search = request.web_search;
     let reply = (shared.brain)(&request);
     shared.requests.lock().unwrap().push(request);
+    if web_search {
+        // One whole answer: the search, its results (titled from the URLs the brain's lines
+        // name), and the brain's lines.
+        let Reply::Says(lines) = reply else { panic!("a search request is answered with text") };
+        let results: Vec<Value> = lines
+            .lines()
+            .filter_map(|l| l.split_once(" — "))
+            .map(|(url, _)| json!({"type": "web_search_result", "url": url.trim(), "title": format!("Title of {}", url.trim()), "encrypted_content": "x"}))
+            .collect();
+        return axum::Json(json!({"type": "message", "role": "assistant", "content": [
+            {"type": "server_tool_use", "id": "srvtoolu_1", "name": "web_search", "input": {"query": "q"}},
+            {"type": "web_search_tool_result", "tool_use_id": "srvtoolu_1", "content": results},
+            {"type": "text", "text": lines},
+        ], "stop_reason": "end_turn", "usage": {"input_tokens": 300, "cache_read_input_tokens": 0, "output_tokens": 40}}))
+        .into_response();
+    }
     let (block, delta, stop) = match reply {
         Reply::Hangs => {
             tokio::time::sleep(Duration::from_secs(3600)).await;

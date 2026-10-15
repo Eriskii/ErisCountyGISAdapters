@@ -10,7 +10,7 @@ mod web;
 
 pub use arcgis::Arcgis;
 pub use spec::{STATEWIDE_SPEC, SpecTool};
-pub use web::Web;
+pub use web::{Web, shown};
 
 use crate::work::Work;
 use erisharness::tools::Tool;

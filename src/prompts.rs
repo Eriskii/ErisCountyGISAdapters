@@ -9,8 +9,10 @@ const HOW: &str = r#"How to find parcels:
 - Counties and states mostly publish parcels as ArcGIS REST services (…/arcgis/rest/services/…/FeatureServer/N
   or MapServer/N), often behind an ArcGIS Hub open-data site. Start with `arcgis search parcels`, then
   `web search <county> county <state> parcels gis`.
-- An open-data page links its service ("View API Resources", "I want to use this", a …/FeatureServer/0
-  URL). A web viewer's page or its config file often names its services: `web get <url> --grep 'rest/services'`.
+- Read pages by asking about them: `web read <url> which links lead to parcel data or ArcGIS REST
+  services?` answers in a few lines with the URLs. An open-data page links its service ("View API
+  Resources", "I want to use this", a …/FeatureServer/0 URL); a web viewer's page or config names its
+  services. Do not `web get` HTML pages: `web get` is for JSON endpoints, with --grep.
 - `arcgis probe` a services directory, then a service, then its parcel layer. Pick the polygon layer of
   tax parcels: not lot lines, points or subdivisions.
 - Neighbouring counties often share a host or vendor (Schneider/Beacon, Tyler, Vision, a regional

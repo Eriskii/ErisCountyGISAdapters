@@ -96,8 +96,9 @@ the tool description and behind `--help`; a parse error comes back as the tool's
 run in-process: there is no shell, no file system and no sandbox.
 
 ```text
-web get <url> [--offset N] [--grep PATTERN [--context N]]   pages as text, JSON pretty-printed
-web search <query…>                                         DuckDuckGo's results
+web search <query…>                                         up to 8 results: title, URL, one line
+web read <url> <question…>                                  a few lines answering the question
+web get <url> [--offset N] [--grep PATTERN [--context N]]   JSON endpoints, 4,000 characters a window
 arcgis search <query…> [--state XX]                         ArcGIS Hub and Online, in the job's box
 arcgis probe <url> [--grep PATTERN]                         directories, services, layers and fields
 spec validate '<json>'                                      run a spec and read its report
@@ -105,6 +106,14 @@ spec show                                                   the spec validated l
 spec submit                                                 save the spec validated last, if it passed
 spec unavailable <reason> --evidence <url>… --note "…"      county jobs only
 ```
+
+`web search` and `web read` run on models of their own, so only their few lines enter the agent's
+context. With a Claude login, the newest Haiku searches with Claude's server-side web search (one
+Messages request made as Claude Code makes them) and reads pages at low effort; with ChatGPT alone,
+its small model reads and search falls back to DuckDuckGo's results page. A reader gets up to
+120,000 characters of a page and answers with the URLs it relied on. The tokens these calls spend
+count toward the agent's attempt, and each attempt's `finished` line in the journal lists them by
+command under `tools`.
 
 `--grep` takes a case-insensitive regular expression and is how agents cut a long answer, such as
 a services directory, down to the lines they need. Statewide searches get the same `spec` as
@@ -165,8 +174,10 @@ about 30 m. It is embedded in the binary; `regenerate-counties` rebuilds it.
 ## Tests
 
 `cargo test` runs the command-line tools as agents call them (help, parse errors, quoting,
-`--grep`, the spec workflow), the validator against a fake county server on loopback (ArcGIS GeoJSON and
+`--grep`, the spec workflow, search and page reading on a stand-in Claude API and their fallbacks), the validator against a fake county server on loopback (ArcGIS GeoJSON and
 Esri JSON, a latitude-first WFS, OGC API Features, and broken variants: projected coordinates,
 ignored offsets, refusals, missing fields), and whole runs against a stand-in model: an agent
 that gives up and hands over to the next rung, a statewide layer covering its counties without
 county agents, a county marked unavailable, and a run stopped mid-turn that resumes its agent.
+`ERISCOUNTYGIS_LIVE_STATE=<state dir> cargo test --test live -- --ignored --nocapture` runs one
+real search and one real page read on the Claude login bound in that state directory.

@@ -6,6 +6,7 @@ use clap::{Parser, Subcommand};
 use erisagentauth::claude::{self, ClaudeAccount};
 use erisagentauth::openai::{self, Method, OpenAiAccount};
 use erisagentauth::{App, Event};
+use eriscountygis::assist::Assistant;
 use eriscountygis::counties::{self, Counties};
 use eriscountygis::http::{Http, Limits};
 use eriscountygis::journal::Journal;
@@ -282,16 +283,18 @@ async fn main() -> Result<()> {
             if ladder.is_empty() {
                 bail!("no model ladder: sign in first (eris-county-gis login, or login --claude), or pass --ladder");
             }
+            let providers = models::providers(&accounts.openai, &accounts.claude, &endpoints(), APP.originator).await?;
+            let assistant = Assistant::from_models(&listed, &providers, &accounts.claude, &endpoints().claude_api);
             let work = Arc::new(Work {
                 counties: all.clone(),
                 registry: Mutex::new(Registry::open(&cli.registry)?),
                 runtime: runtime(&cli.state)?,
+                assistant,
                 agents: Mutex::new(Default::default()),
                 validate_budget,
                 log: Mutex::new(Default::default()),
                 logged: Default::default(),
             });
-            let providers = models::providers(&accounts.openai, &accounts.claude, &endpoints(), APP.originator).await?;
             let harness_dir = cli.state.join("harness");
             let empty = harness_dir.join("empty");
             std::fs::create_dir_all(&empty)?;

@@ -58,8 +58,26 @@ impl Tokens {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum Event {
-    Started { at: u64, job: Job, rung: usize, model: String, agent: String },
-    Finished { at: u64, job: Job, rung: usize, agent: String, outcome: Outcome, tokens: Tokens },
+    Started {
+        at: u64,
+        job: Job,
+        rung: usize,
+        model: String,
+        agent: String,
+    },
+    Finished {
+        at: u64,
+        job: Job,
+        rung: usize,
+        agent: String,
+        outcome: Outcome,
+        /// Every token the attempt spent: its agent's and its tools' own model calls.
+        tokens: Tokens,
+        /// Tokens the agent's tools spent on models of their own, by command (`web search`,
+        /// `web read`); counted in `tokens` too.
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        tools: BTreeMap<String, Tokens>,
+    },
 }
 
 /// A job as the journal tells it.
@@ -174,6 +192,7 @@ mod tests {
                 agent: "a1".into(),
                 outcome: Outcome::GaveUp { summary: "tried the county portal".into() },
                 tokens: Tokens { input: 10, cached_input: 0, output: 5 },
+                tools: BTreeMap::new(),
             })
             .unwrap();
         journal

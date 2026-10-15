@@ -521,7 +521,11 @@ impl Scheduler {
         }
     }
 
-    fn finish(&self, job: &Job, rung: usize, agent: &str, outcome: Outcome, tokens: Tokens) -> Result<()> {
+    fn finish(&self, job: &Job, rung: usize, agent: &str, outcome: Outcome, mut tokens: Tokens) -> Result<()> {
+        let tools = self.work.with_agent(agent, |a| a.tool_tokens.clone()).unwrap_or_default();
+        for spent in tools.values() {
+            tokens.add(spent);
+        }
         self.journal.append(&Event::Finished {
             at: now(),
             job: job.clone(),
@@ -529,6 +533,7 @@ impl Scheduler {
             agent: agent.to_owned(),
             outcome: outcome.clone(),
             tokens: tokens.clone(),
+            tools,
         })?;
         {
             let mut rungs = self.rungs.lock().unwrap();

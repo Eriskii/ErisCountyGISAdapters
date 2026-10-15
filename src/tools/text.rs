@@ -6,9 +6,14 @@ pub const WINDOW: usize = 16_000;
 
 /// The window of `text` starting at `offset` characters, with where it sits.
 pub fn window(text: &str, offset: usize) -> String {
+    window_of(text, offset, WINDOW)
+}
+
+/// The `size`-character window of `text` starting at `offset`, with where it sits.
+pub fn window_of(text: &str, offset: usize, size: usize) -> String {
     let total = text.chars().count();
-    let body: String = text.chars().skip(offset).take(WINDOW).collect();
-    let end = (offset + WINDOW).min(total);
+    let body: String = text.chars().skip(offset).take(size).collect();
+    let end = (offset + size).min(total);
     if offset == 0 && end == total {
         body
     } else {

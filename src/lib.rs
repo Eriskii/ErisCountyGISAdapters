@@ -2,6 +2,7 @@
 //! parcel service, the runtime that reads parcels through them, the validator that proves a
 //! spec works, and the agents and scheduler that write them.
 
+pub mod assist;
 pub mod cli;
 pub mod counties;
 pub mod geom;

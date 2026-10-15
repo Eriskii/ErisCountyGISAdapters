@@ -3,6 +3,7 @@
 
 mod support;
 
+use eriscountygis::assist::Assistant;
 use eriscountygis::counties::Counties;
 use eriscountygis::http::{Http, Limits};
 use eriscountygis::journal::Job;
@@ -15,6 +16,10 @@ use serde_json::json;
 use std::sync::{Arc, Mutex};
 
 fn work(dir: &std::path::Path, job: Job) -> Arc<Work> {
+    work_with(dir, job, Assistant::default())
+}
+
+fn work_with(dir: &std::path::Path, job: Job, assistant: Assistant) -> Arc<Work> {
     let work = Arc::new(Work {
         counties: Arc::new(Counties::embedded().unwrap()),
         registry: Mutex::new(Registry::open(&dir.join("registry")).unwrap()),
@@ -23,6 +28,7 @@ fn work(dir: &std::path::Path, job: Job) -> Arc<Work> {
             cache: dir.join("cache"),
             validate_within: VALIDATE_WITHIN,
         },
+        assistant,
         agents: Mutex::default(),
         validate_budget: 3,
         log: Mutex::default(),
@@ -145,4 +151,102 @@ async fn a_statewide_search_cannot_mark_counties_unavailable() {
     let output = spec.run("agent", "unavailable paywalled --evidence https://x.org --note x").await;
     assert!(output.is_error);
     assert!(spec.run("agent", "statewide_spec show").await.is_error, "nothing validated yet");
+}
+
+/// A Claude login bound to a Claude Code credentials file in `dir`, on the stand-in API.
+async fn claude_assistant(dir: &std::path::Path, model: &support::model::Model) -> Assistant {
+    use erisagentauth::claude::ClaudeAccount;
+    let expires = eriscountygis::registry::now() + 3_600_000;
+    let credentials = dir.join("claude-code.json");
+    std::fs::write(
+        &credentials,
+        json!({"claudeAiOauth": {"accessToken": "from-claude-code", "expiresAt": expires, "scopes": ["user:inference"]}})
+            .to_string(),
+    )
+    .unwrap();
+    let (events, _) = tokio::sync::broadcast::channel(16);
+    let app = erisagentauth::App { name: "test", originator: "test" };
+    let openai =
+        erisagentauth::openai::OpenAiAccount::load(dir.join("chatgpt.json"), &model.url, app, events.clone()).unwrap();
+    let claude = ClaudeAccount::load(dir.join("claude.json"), &model.url, &model.url, events).unwrap();
+    claude.bind(&credentials).await.unwrap();
+    let endpoints = eriscountygis::models::Endpoints { codex: model.url.clone(), claude_api: model.url.clone() };
+    let listed = eriscountygis::models::list_claude(&claude, &model.url).await.unwrap();
+    let providers = eriscountygis::models::providers(&openai, &claude, &endpoints, "test").await.unwrap();
+    Assistant::from_models(&listed, &providers, &claude, &model.url)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn searching_and_reading_bring_back_a_few_lines_and_count_their_tokens() {
+    use support::model::{Brain, Model, Reply, Request};
+    let dir = tempfile::tempdir().unwrap();
+    let root = server().await;
+    let brain: Brain = Arc::new(|request: &Request| {
+        if request.web_search {
+            let lines: Vec<String> =
+                (0..10).map(|i| format!("https://county{i}.example.gov/gis — county {i}'s parcel viewer")).collect();
+            return Reply::Says(lines.join("\n"));
+        }
+        let page = request.briefing();
+        assert!(page.contains(support::PAGE_FILLER), "the reader gets the whole page");
+        let service = page.split("[Parcels service](").nth(1).unwrap().split(')').next().unwrap().to_owned();
+        Reply::Says(format!("The parcel layer is {service}"))
+    });
+    let model = Model::start(brain).await;
+    let assistant = claude_assistant(dir.path(), &model).await;
+    assert_eq!(assistant.reader.as_ref().unwrap().effort.as_deref(), Some("low"));
+    let work = work_with(dir.path(), Job::County("55025".into()), assistant);
+    let web = Web(work.clone());
+
+    let search = web.run("agent", "search dane county parcels gis").await;
+    assert!(!search.is_error, "{}", text(&search));
+    let shown = text(&search);
+    assert_eq!(shown.lines().filter(|l| l.starts_with("- ")).count(), 8, "{shown}");
+    assert!(shown.contains(
+        "- Title of https://county0.example.gov/gis\n  https://county0.example.gov/gis\n  county 0's parcel viewer"
+    ));
+    assert!(!shown.contains("DuckDuckGo"));
+
+    let read = web.run("agent", &format!("read {root}/page where is the parcel service")).await;
+    assert!(!read.is_error, "{}", text(&read));
+    let answer = text(&read);
+    assert!(answer.contains(&format!("{root}/arcgis/good/FeatureServer/0")), "{answer}");
+    assert!(!answer.contains(support::PAGE_FILLER) && answer.len() < 500, "the page stays out: {answer}");
+
+    let requests = model.requests.lock().unwrap();
+    let reader = requests.iter().find(|r| !r.web_search).unwrap();
+    assert_eq!((reader.model.as_str(), reader.effort.as_deref()), ("claude-haiku-9", Some("low")));
+    drop(requests);
+    let (tools, total) = work.with_agent("agent", |a| (a.tool_tokens.clone(), a.tokens.clone())).unwrap();
+    assert_eq!((tools["web search"].input, tools["web search"].output), (300, 40));
+    assert!(tools["web read"].input > 0);
+    assert_eq!(total.input, tools["web search"].input + tools["web read"].input, "tool tokens count toward the job");
+}
+
+#[tokio::test]
+async fn without_a_login_search_falls_back_and_reading_points_to_web_get() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = server().await;
+    let assistant = Assistant { fallback_search: format!("{root}/ddg"), ..Assistant::default() };
+    let work = work_with(dir.path(), Job::County("55025".into()), assistant);
+    let web = Web(work.clone());
+    let search = web.run("agent", "search dane county parcels").await;
+    let shown = text(&search);
+    assert!(!search.is_error, "{shown}");
+    assert_eq!(shown.lines().filter(|l| l.starts_with("- ")).count(), 8, "{shown}");
+    assert!(shown.contains("https://county0.example.gov/gis"));
+    assert!(shown.contains("from DuckDuckGo: web search needs a Claude login"), "{shown}");
+    let read = web.run("agent", &format!("read {root}/page where is the parcel service")).await;
+    assert!(read.is_error && text(&read).contains("web get"), "{}", text(&read));
+    assert!(work.with_agent("agent", |a| a.tool_tokens.is_empty()).unwrap());
+}
+
+#[tokio::test]
+async fn web_get_shows_a_page_in_small_windows() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = server().await;
+    let web = Web(work(dir.path(), Job::County("55025".into())));
+    let shown = text(&web.run("agent", &format!("get {root}/page")).await);
+    assert!(shown.contains("[characters 0–4000 of"), "{}", &shown[..200.min(shown.len())]);
+    assert!(shown.len() < 4_500);
 }

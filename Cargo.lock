@@ -774,6 +774,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "url",
+ "uuid",
  "zip",
 ]
 

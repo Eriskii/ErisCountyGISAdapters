@@ -1,13 +1,14 @@
 //! What the scheduler and the agents' tools share: the counties, the registry, the parcel
 //! runtime, and each live agent's job and progress.
 
+use crate::assist::Assistant;
 use crate::counties::{Counties, County};
 use crate::journal::{Job, Tokens};
 use crate::registry::Registry;
 use crate::runtime::Runtime;
 use crate::spec::{Reason, Spec};
 use crate::validate::{self, Report};
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 
 /// How an agent's job ended, as its tools recorded it.
@@ -39,6 +40,8 @@ pub struct AgentJob {
     /// The tool call running or last run, for the TUI.
     pub activity: String,
     pub tokens: Tokens,
+    /// Tokens the agent's tools spent on models of their own, by command; counted in `tokens`.
+    pub tool_tokens: BTreeMap<String, Tokens>,
     /// What the attempt has tried, newest last, for the next rung's briefing.
     pub trail: VecDeque<String>,
     pub started: u64,
@@ -57,6 +60,7 @@ impl AgentJob {
             resolution: None,
             activity: "starting".into(),
             tokens: Tokens::default(),
+            tool_tokens: BTreeMap::new(),
             trail: VecDeque::new(),
             started: crate::registry::now(),
             nudged: false,
@@ -75,6 +79,8 @@ pub struct Work {
     pub counties: Arc<Counties>,
     pub registry: Mutex<Registry>,
     pub runtime: Runtime,
+    /// The models the agents' tools ask: web search and page reading.
+    pub assistant: Assistant,
     pub agents: Mutex<HashMap<String, AgentJob>>,
     /// Failed validations an attempt may make before it must stop.
     pub validate_budget: usize,
@@ -91,6 +97,14 @@ impl Work {
         }
         log.push_back(line.into());
         self.logged.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Counts `tokens` a tool's own model call spent toward `agent`'s job, under `command`.
+    pub fn charge(&self, agent: &str, command: &str, tokens: &Tokens) {
+        self.with_agent(agent, |a| {
+            a.tokens.add(tokens);
+            a.tool_tokens.entry(command.to_owned()).or_default().add(tokens);
+        });
     }
 
     pub fn with_agent<T>(&self, agent: &str, f: impl FnOnce(&mut AgentJob) -> T) -> Option<T> {

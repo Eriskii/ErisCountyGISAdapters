@@ -7,6 +7,7 @@ mod support;
 use erisagentauth::App;
 use erisagentauth::claude::ClaudeAccount;
 use erisagentauth::openai::OpenAiAccount;
+use eriscountygis::assist::Assistant;
 use eriscountygis::counties::Counties;
 use eriscountygis::http::{Http, Limits};
 use eriscountygis::journal::{Event, Journal, Outcome};
@@ -40,12 +41,13 @@ async fn scheduler(dir: &Path, model: &Model, counties: Vec<String>, statewide: 
         credentials: Arc::new(StaticToken("token".into())),
         gate: RateGate::new(16, 64),
     }));
-    scheduler_on(dir, vec![(CODEX, provider)], ladder(), counties, statewide).await
+    scheduler_on(dir, vec![(CODEX, provider)], Assistant::default(), ladder(), counties, statewide).await
 }
 
 async fn scheduler_on(
     dir: &Path,
     providers: Vec<(&'static str, Arc<dyn Provider>)>,
+    assistant: Assistant,
     ladder: Vec<Rung>,
     counties: Vec<String>,
     statewide: bool,
@@ -59,6 +61,7 @@ async fn scheduler_on(
             cache: dir.join("cache"),
             validate_within: VALIDATE_WITHIN,
         },
+        assistant,
         agents: Mutex::default(),
         validate_budget: 3,
         log: Mutex::default(),
@@ -268,9 +271,17 @@ async fn claude_rungs_run_on_the_bound_claude_code_login() {
     let dir = tempfile::tempdir().unwrap();
     let root = support::serve(support::Grid::around_all(&interiors(&["55025"]))).await;
     let spec = good_spec(&root, json!({"counties": ["55025"]}));
-    let brain: Brain = Arc::new(move |request: &Request| match request.model.as_str() {
-        "claude-haiku-9" => Reply::Says("Dane County shows parcels only in a viewer.".into()),
-        _ => diligent(request, "spec", &spec),
+    let brain: Brain = Arc::new(move |request: &Request| {
+        if request.web_search {
+            return Reply::Says("https://dane.example.gov/gis — Dane County's GIS page".into());
+        }
+        match request.model.as_str() {
+            "claude-haiku-9" if request.outputs.is_empty() => {
+                Reply::Calls("web".into(), json!({"command": "search dane county parcels"}))
+            }
+            "claude-haiku-9" => Reply::Says("Dane County shows parcels only in a viewer.".into()),
+            _ => diligent(request, "spec", &spec),
+        }
     });
     let model = Model::start(brain).await;
 
@@ -286,7 +297,8 @@ async fn claude_rungs_run_on_the_bound_claude_code_login() {
     let listed = models::list_claude(&claude, &endpoints.claude_api).await.unwrap();
     let ladder = models::parse_ladder("haiku:low, sonnet:high", &listed).unwrap();
     let providers = models::providers(&openai, &claude, &endpoints, "test").await.unwrap();
-    let run = scheduler_on(dir.path(), providers, ladder, vec!["55025".into()], false).await;
+    let assistant = Assistant::from_models(&listed, &providers, &claude, &endpoints.claude_api);
+    let run = scheduler_on(dir.path(), providers, assistant, ladder, vec!["55025".into()], false).await;
     tokio::time::timeout(Duration::from_secs(60), run.run()).await.unwrap().unwrap();
 
     let registry = Registry::open(&dir.path().join("registry")).unwrap();
@@ -295,7 +307,16 @@ async fn claude_rungs_run_on_the_bound_claude_code_login() {
     assert_eq!(saved.verification.rung, Some(1));
     let requests = model.requests.lock().unwrap();
     assert!(requests.iter().any(|r| r.model == "claude-haiku-9"), "haiku resolves to the newest Haiku");
-    for request in requests.iter() {
+    let searched = self::events(dir.path())
+        .into_iter()
+        .find_map(|e| match e {
+            Event::Finished { rung: 0, tokens, tools, .. } => Some((tokens, tools)),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(searched.1["web search"].input, 300, "the journal names what the search spent");
+    assert!(searched.0.input > 300, "and counts it in the attempt's tokens");
+    for request in requests.iter().filter(|r| !r.web_search) {
         let effort = if request.model == "claude-haiku-9" { "low" } else { "high" };
         assert_eq!(request.thinking.as_deref(), Some("adaptive"));
         assert_eq!(request.effort.as_deref(), Some(effort), "each rung's effort reaches Claude");
