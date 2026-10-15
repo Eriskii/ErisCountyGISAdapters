@@ -81,7 +81,7 @@ async fn scheduler_on(
 
 fn good_spec(root: &str, coverage: Value) -> Value {
     json!({
-        "id": "fake-parcels", "publisher": "Fake GIS",
+        "id": "fake-parcels", "publisher": "Fake GIS", "official": true,
         "source": {"kind": "arcgis-feature", "url": format!("{root}/arcgis/good/FeatureServer/0")},
         "coverage": coverage,
         "fields": {"apn": "PARCELNO", "owner": "OWNER", "address": "SITEADDR", "acres": "GISACRES"},

@@ -118,20 +118,47 @@ async fn arcgis(
         if variant == "ignores-offset" { 0 } else { q.get("resultOffset").map_or(0, |s| s.parse().unwrap()) };
     let max_record = if variant == "whole-pages" { 2000 } else { 50usize };
     let count = q.get("resultRecordCount").map_or(max_record, |s| s.parse::<usize>().unwrap().min(max_record));
-    let page: Vec<&Parcel> = all.iter().skip(offset).take(count).copied().collect();
-    let exceeded = offset + page.len() < all.len();
+    // Like a county with condominiums: every tenth parcel is a building of three units, each
+    // its own parcel on the building's outline; every tenth from the fifth, two units sharing
+    // one parcel number. The second unit's ring starts at another corner.
+    let units = |p: &Parcel| match (variant == "condos", p.id % 10) {
+        (true, 0) => 3,
+        (true, 5) => 2,
+        _ => 1,
+    };
+    let expanded: Vec<(&Parcel, usize)> =
+        all.iter().flat_map(|p| (1..=units(p)).map(move |unit| (*p, if units(p) > 1 { unit } else { 0 }))).collect();
+    let page: Vec<(&Parcel, usize)> = expanded.iter().skip(offset).take(count).copied().collect();
+    let exceeded = offset + page.len() < expanded.len();
+    let unit_properties = |p: &Parcel, unit: usize| {
+        let mut properties = properties(p);
+        if unit > 0 {
+            if p.id.is_multiple_of(10) {
+                properties["PARCELNO"] = json!(format!("0810-{:04}-U{unit}", p.id));
+            }
+            properties["SITEADDR"] = json!(format!("{} Main St Unit {unit}", 100 + p.id));
+        }
+        properties
+    };
     if q["f"] == "geojson" {
         let features: Vec<Value> = page
             .iter()
-            .map(|p| {
+            .map(|&(p, unit)| {
                 let mut coordinates = ring(p.bounds, false);
+                if unit == 2 {
+                    let points = coordinates.as_array_mut().unwrap();
+                    points.pop();
+                    points.rotate_left(2);
+                    let first = points[0].clone();
+                    points.push(first);
+                }
                 if variant == "mercator" {
                     for point in coordinates.as_array_mut().unwrap() {
                         let (x, y) = mercator_inverse(point[0].as_f64().unwrap(), point[1].as_f64().unwrap());
                         *point = json!([x, y]);
                     }
                 }
-                json!({"type": "Feature", "geometry": {"type": "Polygon", "coordinates": [coordinates]}, "properties": properties(p)})
+                json!({"type": "Feature", "geometry": {"type": "Polygon", "coordinates": [coordinates]}, "properties": unit_properties(p, unit)})
             })
             .collect();
         let mut body = json!({"type": "FeatureCollection", "features": features});
@@ -142,7 +169,7 @@ async fn arcgis(
     } else {
         let features: Vec<Value> = page
             .iter()
-            .map(|p| json!({"geometry": {"rings": [ring(p.bounds, true)]}, "attributes": properties(p)}))
+            .map(|&(p, unit)| json!({"geometry": {"rings": [ring(p.bounds, true)]}, "attributes": unit_properties(p, unit)}))
             .collect();
         axum::Json(json!({"features": features, "exceededTransferLimit": exceeded})).into_response()
     }

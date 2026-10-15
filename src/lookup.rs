@@ -1,7 +1,8 @@
 //! What a map view's box holds: the counties it crosses, the adapter each county's parcels are
 //! read through, and those parcels as GeoJSON features with their normalized fields. A county
 //! is read through an adapter verified for it, or else one whose coverage claims it; a county
-//! with neither says why it shows nothing.
+//! with neither says why it shows nothing. Parcels drawn on one outline, such as a building's
+//! condominium units, are one feature listing its units.
 
 use crate::counties::{Counties, County};
 use crate::geom::Bbox;
@@ -23,7 +24,9 @@ const KEEP_FOR_MS: u64 = 7 * 86_400_000;
 #[derive(Debug, Default, Serialize)]
 pub struct View {
     /// GeoJSON features: a parcel's normalized fields, `key` (the adapter's id and the parcel's
-    /// own id, the same in every box), `adapter` and `publisher`.
+    /// own id, the same in every box), `adapter` and `publisher`. A feature standing for several
+    /// parcels on one outline also has `unit_count` and `units` (each unit's normalized fields);
+    /// its own fields are those every unit shares, and its key is its smallest unit's.
     pub features: Vec<Value>,
     pub counties: Vec<CountyView>,
 }
@@ -51,6 +54,10 @@ pub struct SourceView {
     pub publisher: String,
     /// Whether the adapter passed validation for this county, rather than claiming it.
     pub verified: bool,
+    /// Whether the layer is the jurisdiction's own (`false`: a copy someone else hosts); absent
+    /// when the adapter does not say.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub official: Option<bool>,
 }
 
 #[derive(Debug, Serialize)]
@@ -119,6 +126,7 @@ pub async fn read(
                 adapter: spec.id.clone(),
                 publisher: spec.publisher.clone(),
                 verified,
+                official: spec.official,
             }),
             unavailable,
             more: false,
@@ -135,7 +143,7 @@ pub async fn read(
                 Err(error) => county.error = Some(error.clone()),
             }
         }
-        for feature in read.map(|r| r.features).unwrap_or_default() {
+        for feature in stack(read.map(|r| r.features).unwrap_or_default()) {
             if seen.insert(feature["properties"]["key"].as_str().unwrap_or_default().to_owned()) {
                 view.features.push(feature);
             }
@@ -187,7 +195,83 @@ pub fn feature(spec: &Spec, parcel: &crate::runtime::Parcel) -> Value {
     properties.insert("key".into(), json!(format!("{}:{own}", spec.id)));
     properties.insert("adapter".into(), json!(spec.id));
     properties.insert("publisher".into(), json!(spec.publisher));
+    if let Some(official) = spec.official {
+        properties.insert("official".into(), json!(official));
+    }
     json!({"type": "Feature", "geometry": crate::geom::to_geojson(&parcel.geometry, 7), "properties": properties})
+}
+
+/// The normalized fields a parcel feature may carry.
+const FIELDS: [&str; 6] = ["apn", "owner", "address", "acres", "land_use", "assessed_value"];
+
+/// An outline as a comparable string: coordinates to about 10 cm, each ring from its smallest
+/// point and in one direction, the rings in order.
+fn outline(geometry: &Value) -> String {
+    let mut rings: Vec<Vec<(i64, i64)>> = Vec::new();
+    for polygon in geometry["coordinates"].as_array().into_iter().flatten() {
+        for ring in polygon.as_array().into_iter().flatten() {
+            let mut points: Vec<(i64, i64)> = ring
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|p| Some(((p[0].as_f64()? * 1e6).round() as i64, (p[1].as_f64()? * 1e6).round() as i64)))
+                .collect();
+            if points.len() > 1 && points.first() == points.last() {
+                points.pop();
+            }
+            if let Some(start) = points.iter().enumerate().min_by_key(|(_, p)| **p).map(|(i, _)| i) {
+                points.rotate_left(start);
+            }
+            if points.len() > 2 && points[1] > points[points.len() - 1] {
+                points[1..].reverse();
+            }
+            rings.push(points);
+        }
+    }
+    rings.sort();
+    format!("{rings:?}")
+}
+
+/// One source's features with the parcels on each outline as one feature (see [`View`]).
+fn stack(features: Vec<Value>) -> Vec<Value> {
+    let mut order: Vec<String> = Vec::new();
+    let mut groups: std::collections::HashMap<String, Vec<Value>> = std::collections::HashMap::new();
+    for feature in features {
+        let shape = outline(&feature["geometry"]);
+        if !groups.contains_key(&shape) {
+            order.push(shape.clone());
+        }
+        groups.entry(shape).or_default().push(feature);
+    }
+    order
+        .into_iter()
+        .filter_map(|shape| groups.remove(&shape))
+        .map(|mut members| {
+            members.sort_by(|a, b| a["properties"]["key"].as_str().cmp(&b["properties"]["key"].as_str()));
+            let mut units: Vec<serde_json::Map<String, Value>> = Vec::new();
+            for member in &members {
+                let unit: serde_json::Map<String, Value> = FIELDS
+                    .iter()
+                    .filter_map(|f| member["properties"].get(*f).map(|v| (f.to_string(), v.clone())))
+                    .collect();
+                if !units.contains(&unit) {
+                    units.push(unit);
+                }
+            }
+            let mut feature = members.swap_remove(0);
+            if units.len() > 1 {
+                let properties = feature["properties"].as_object_mut().expect("feature properties");
+                for field in FIELDS {
+                    if units.iter().any(|u| u.get(field) != units[0].get(field)) {
+                        properties.remove(field);
+                    }
+                }
+                properties.insert("unit_count".into(), json!(units.len()));
+                properties.insert("units".into(), json!(units));
+            }
+            feature
+        })
+        .collect()
 }
 
 fn box_hash(bbox: Bbox) -> u64 {

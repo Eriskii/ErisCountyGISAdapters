@@ -22,6 +22,7 @@ const FORMAT: &str = r#"A spec is JSON:
 {
   "id": "ga-fulton",                       lowercase letters, digits, dashes; unique
   "publisher": "Fulton County GIS",        who publishes the layer
+  "official": true,                        required; see below
   "source": {"kind": "arcgis-feature", "url": "https://…/arcgis/rest/services/…/MapServer/0",
              "page_size": 1000,            the layer's maxRecordCount, or less
              "geojson": true},             false when supportedQueryFormats lacks geoJSON
@@ -41,6 +42,12 @@ Other sources:
 
 Map apn, address or owner at least, and every field you can, with attribute names exactly as the
 source spells them. The runtime asks for longitude/latitude and pages by itself.
+
+"official" says who stands behind the layer. true: the county or city, its state, or a vendor
+serving it for them (a county-branded host, the county's ArcGIS Online organization). false: a
+copy someone else hosts, such as a personal ArcGIS Online item, a class project or a mirror;
+say whose copy it is in "notes". Use a copy only when nothing official is queryable. spec submit
+refuses a spec that does not say.
 
 Give the JSON as one argument in single quotes. Inside them, write a single quote as '\'' :
   spec validate '{"id": "x", …, "filter": "NAME = '\''FULTON'\''"}'"#;
@@ -205,6 +212,12 @@ impl SpecTool {
         };
         if !last.passed {
             return ToolOutput::error("the spec validated last did not pass; fix it and validate again");
+        }
+        if last.spec.official.is_none() {
+            return ToolOutput::error(
+                "the spec does not say whether it is official: add \"official\": true for the jurisdiction's own \
+                 layer, or false for a copy someone else hosts (say whose in \"notes\"), validate it, then submit",
+            );
         }
         let passing: Vec<String> = serde_json::from_str::<Value>(&last.report)
             .ok()

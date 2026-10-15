@@ -141,3 +141,38 @@ async fn answers_are_kept_and_read_again_without_the_server() {
     assert_eq!(again.counties[0].error, None, "kept by the source it was read from, not the URL");
     assert_eq!(again.features.len(), first.features.len());
 }
+
+#[tokio::test]
+async fn parcels_stacked_on_one_outline_are_one_feature_listing_its_units() {
+    let counties = Counties::embedded().unwrap();
+    let [x, y] = counties.get("55025").unwrap().interior;
+    let root = support::serve(support::Grid::around(x, y)).await;
+    let dir = tempfile::tempdir().unwrap();
+    let registry = dir.path().join("registry");
+    adapter(&registry, "wi-dane", &format!("{root}/arcgis/condos/FeatureServer/0"), json!({"counties": ["55025"]}));
+    write(&registry.join("index.json"), &json!({"version": 1, "counties": {"55025": ["wi-dane"]}}));
+
+    let view = read(&registry, &dir.path().join("cache"), dane_box(&counties)).await;
+    let units = |f: &Value| f["properties"]["unit_count"].as_u64().unwrap_or(1);
+    let three = view.features.iter().find(|f| units(f) == 3).expect("a building of three units");
+    let listed = three["properties"]["units"].as_array().unwrap();
+    let apns: Vec<&str> = listed.iter().map(|u| u["apn"].as_str().unwrap()).collect();
+    assert_eq!(apns.len(), 3);
+    assert!(apns.iter().all(|a| a.ends_with("-U1") || a.ends_with("-U2") || a.ends_with("-U3")), "{apns:?}");
+    assert!(listed.iter().all(|u| u["address"].as_str().unwrap().contains(" Unit ")));
+    let key = three["properties"]["key"].as_str().unwrap();
+    assert_eq!(key, format!("wi-dane:{}", apns.iter().min().unwrap()), "the smallest unit's key");
+
+    // Two units under one parcel number are both listed, not dropped as one key.
+    let shared = view.features.iter().find(|f| units(f) == 2).expect("two units sharing a parcel number");
+    let addresses: Vec<&str> =
+        shared["properties"]["units"].as_array().unwrap().iter().map(|u| u["address"].as_str().unwrap()).collect();
+    assert_eq!(addresses.len(), 2);
+    assert_ne!(addresses[0], addresses[1]);
+
+    // Parcels of their own stay as they are, and every outline is drawn once.
+    let single = view.features.iter().find(|f| units(f) == 1).unwrap();
+    assert!(single["properties"].get("units").is_none());
+    let outlines: std::collections::HashSet<String> = view.features.iter().map(|f| f["geometry"].to_string()).collect();
+    assert_eq!(outlines.len(), view.features.len(), "one feature per outline");
+}

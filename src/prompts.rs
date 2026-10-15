@@ -17,6 +17,10 @@ const HOW: &str = r#"How to find parcels:
   tax parcels: not lot lines, points or subdivisions.
 - Neighbouring counties often share a host or vendor (Schneider/Beacon, Tyler, Vision, a regional
   consortium, a state portal): try theirs first.
+- Prefer the official layer: the county's or city's own, its state's, or a vendor's serving it for
+  them. ArcGIS Online also holds copies people uploaded themselves (personal items, class projects,
+  mirrors); use one only when nothing official is queryable, and submit it with "official": false
+  and whose copy it is in "notes".
 - Then `spec validate '<json>'`, read the report, fix what it names, and `spec submit` once it passes.
 
 A county is unavailable only if, after a real search, its parcels are not published as a queryable
@@ -137,3 +141,17 @@ pub fn state_briefing(state: &str, state_name: &str, counties: usize, summaries:
 pub const NUDGE: &str = "You stopped without `spec submit` or `spec unavailable`. Keep going: validate \
     and submit a spec, or record the county unavailable with evidence. If you are truly stuck, reply with \
     a short summary of what you tried (URLs, layers, what failed) instead.";
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn agents_are_told_to_prefer_official_layers_and_mark_copies() {
+        for statewide in [false, true] {
+            let prompt = system_prompt(statewide);
+            assert!(prompt.contains("Prefer the official layer"), "{prompt}");
+            assert!(prompt.contains("\"official\": false"), "{prompt}");
+        }
+    }
+}

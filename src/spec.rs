@@ -15,6 +15,11 @@ pub struct Spec {
     pub id: String,
     /// Who publishes the layer, such as `Wisconsin State Cartographer's Office`.
     pub publisher: String,
+    /// Whether the layer is the jurisdiction's own: published by the county or city, its state,
+    /// or a vendor serving it for them (`true`), or a copy someone else hosts, such as a personal
+    /// ArcGIS Online item (`false`, with why in `notes`). Specs that do not say read as unknown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub official: Option<bool>,
     pub source: Source,
     pub coverage: Coverage,
     pub fields: Fields,
@@ -296,6 +301,13 @@ mod tests {
         assert_eq!(spec.fields.mapped().into_iter().collect::<Vec<_>>(), [("apn", "PARCELID"), ("owner", "OWNERNME1")]);
         assert_eq!(spec.host().as_deref(), Some("services3.arcgis.com"));
         assert!(spec.coverage.claims("55025", |_| Some("WI".into())));
+        assert_eq!(spec.official, None, "a spec that does not say is neither official nor a copy");
+        let said = |official: bool| {
+            let mut value = serde_json::to_value(&spec).unwrap();
+            value["official"] = json!(official);
+            serde_json::from_value::<Spec>(value).unwrap().official
+        };
+        assert_eq!((said(true), said(false)), (Some(true), Some(false)));
     }
 
     #[test]

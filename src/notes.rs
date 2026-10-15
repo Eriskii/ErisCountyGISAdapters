@@ -103,6 +103,25 @@ pub fn notes(counties: &Counties, registry: &Registry, events: &[Event], now: u6
     let _ = writeln!(out, "| **All** | **{}** |\n", counties.list.len());
     let _ = writeln!(out, "{} adapters, {statewide} of them statewide.\n", registry.adapters.len());
 
+    let copies: Vec<_> = registry.adapters.values().filter(|s| s.official == Some(false)).collect();
+    let unsaid = registry.adapters.values().filter(|s| s.official.is_none()).count();
+    let _ = writeln!(out, "## Unofficial copies ({})\n", copies.len());
+    for spec in &copies {
+        let covers = match &spec.coverage {
+            Coverage::Counties(list) => {
+                list.iter().map(|f| counties.get(f).map_or(f.clone(), |c| c.label())).collect::<Vec<_>>().join(", ")
+            }
+            Coverage::States(states) => format!("statewide: {}", states.join(", ")),
+        };
+        let _ = writeln!(out, "- **{}** ({covers}): {}. {}", spec.id, spec.publisher, shorten(&spec.notes, 300));
+    }
+    let _ = writeln!(
+        out,
+        "\n{unsaid} adapter{} not say whether {} official.\n",
+        if unsaid == 1 { " does" } else { "s do" },
+        if unsaid == 1 { "it is" } else { "they are" }
+    );
+
     let _ = writeln!(out, "## Unavailable, by reason\n");
     let mut reasons: BTreeMap<&str, Vec<_>> = BTreeMap::new();
     for record in registry.unavailable.values() {
@@ -178,6 +197,7 @@ mod tests {
     use super::*;
     use crate::journal::Tokens;
     use crate::spec::{Reason, Unavailable};
+    use serde_json::json;
 
     fn finished(fips: &str, rung: usize, agent: &str, outcome: Outcome) -> Event {
         Event::Finished {
@@ -230,8 +250,34 @@ mod tests {
                 Outcome::GaveUp { summary: "The server says \"You do not have permissions\".".into() },
             ),
         ];
+        let mut copy = |id: &str, official: Option<bool>| {
+            let mut value = json!({
+                "version": 1, "id": id, "publisher": "Someone's ArcGIS Online",
+                "source": {"kind": "arcgis-feature", "url": "https://services.arcgis.com/x/FeatureServer/0"},
+                "coverage": {"counties": ["26163"]}, "fields": {"apn": "PIN"},
+                "notes": "A personal hosted copy; Wayne County publishes no queryable layer.",
+            });
+            if let Some(official) = official {
+                value["official"] = json!(official);
+            }
+            registry.save_adapter(serde_json::from_value(value).unwrap()).unwrap();
+        };
+        copy("mi-wayne-copy", Some(false));
+        copy("mi-unsaid", None);
+        copy("mi-official", Some(true));
         let text = notes(&counties, &registry, &events, 0);
-        let section = |title: &str| text.split(title).nth(1).unwrap().split("\n### ").next().unwrap().to_owned();
+        let section = |title: &str| {
+            text.split(title)
+                .nth(1)
+                .unwrap_or_else(|| panic!("no {title} in {text}"))
+                .split("\n#")
+                .next()
+                .unwrap()
+                .to_owned()
+        };
+        let copies = section("## Unofficial copies (1)");
+        assert!(copies.contains("mi-wayne-copy") && copies.contains("Wayne County, MI"), "{text}");
+        assert!(copies.contains("1 adapter does not say whether it is official."), "{text}");
         let certs = section("### Expired or broken HTTPS certificates (2)");
         assert!(certs.contains("Macoupin County, IL") && certs.contains("Lawrence County, IL"), "{text}");
         assert!(section("### Public services that refuse access (1)").contains("Owyhee County, ID"));

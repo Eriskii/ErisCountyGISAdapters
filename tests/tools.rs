@@ -65,6 +65,7 @@ async fn help_is_an_answer_and_mistakes_are_errors() {
     let spec = SpecTool { work: work.clone(), statewide: false };
     assert!(spec.description().contains("Give the JSON as one argument in single quotes"));
     assert!(spec.description().contains("unavailable"));
+    assert!(spec.description().contains("\"official\""), "the help explains official");
     assert!(spec.run("agent", "unavailable paywalled --note x").await.is_error, "--evidence is required");
     assert!(spec.run("agent", "unavailable broke --evidence https://x.org --note x").await.is_error);
 }
@@ -135,9 +136,18 @@ async fn specs_are_validated_shown_and_submitted_from_the_command_line() {
     assert!(text(&output).contains("\"passed\": true"), "{}", text(&output));
     let shown = text(&spec.run("agent", "show").await);
     assert!(shown.contains("\"filter\": \"NAME <> 'X'\"") && shown.contains("\"passed\": true"), "{shown}");
+    let unsaid = spec.run("agent", "submit").await;
+    assert!(unsaid.is_error && text(&unsaid).contains("official"), "a spec must say whether it is official");
+
+    let mut good = good;
+    good["official"] = json!(false);
+    good["notes"] = json!("A copy on a personal ArcGIS Online account; the county publishes none.");
+    let line = format!("spec validate '{}'", good.to_string().replace('\'', r"'\''"));
+    assert!(text(&spec.run("agent", &line).await).contains("\"passed\": true"));
     let saved = spec.run("agent", "submit").await;
     assert!(!saved.is_error, "{}", text(&saved));
     let registry = Registry::open(&dir.path().join("registry")).unwrap();
+    assert_eq!(registry.adapters["fake"].official, Some(false));
     assert_eq!(registry.adapters["fake"].filter.as_deref(), Some("NAME <> 'X'"));
     assert_eq!(registry.index["55025"], ["fake"]);
 }

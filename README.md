@@ -24,6 +24,7 @@ A spec:
   "version": 1,
   "id": "ga-fulton",
   "publisher": "Fulton County GIS",
+  "official": true,
   "source": { "kind": "arcgis-feature", "url": "https://gismaps.fultoncountyga.gov/arcgispub/rest/services/OpenData/Tax_Parcels/MapServer/0",
               "page_size": 2000, "geojson": true },
   "coverage": { "counties": ["13121"] },
@@ -40,7 +41,12 @@ A spec:
 | `ogc-features`   | An OGC API Features collection, following `next` links                                |
 | `bulk-download`  | A GeoJSON file or zipped shapefile in EPSG 4326, 4269 or 3857, downloaded once         |
 
-`coverage` is a list of county FIPS codes or a list of states. Normalized fields are `apn`,
+`official` is `true` for the jurisdiction's own layer (the county or city, its state, or a vendor
+serving it for them) and `false` for a copy someone else hosts, such as a personal ArcGIS Online
+item, with whose copy it is in `notes`; agents use a copy only when nothing official is
+queryable, and `spec submit` refuses a spec that does not say. Specs written before the field
+existed read as unknown. `notes` lists the unofficial adapters. `coverage` is a list of county
+FIPS codes or a list of states. Normalized fields are `apn`,
 `owner`, `address`, `acres`, `land_use` and `assessed_value`, each optional; `filter` is an
 optional static filter (an ArcGIS `where` clause). Unavailable reasons are `no-public-gis`,
 `viewer-only`, `paywalled`, `login-required` and `tos-forbids-automation`; a record is searched
