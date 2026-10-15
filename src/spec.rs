@@ -258,8 +258,10 @@ pub struct Unavailable {
     pub version: u32,
     pub fips: String,
     pub reason: Reason,
-    /// What was found, with links: the viewer, the price list, the terms.
-    pub detail: String,
+    /// Links that show it: the viewer, the price list, the terms, the login page.
+    pub evidence: Vec<String>,
+    /// What was found.
+    pub note: String,
     /// Unix milliseconds.
     pub recorded_at: u64,
     /// Unix milliseconds after which the county is searched again.

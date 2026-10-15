@@ -69,18 +69,25 @@ fn good_spec(root: &str, coverage: Value) -> Value {
         "source": {"kind": "arcgis-feature", "url": format!("{root}/arcgis/good/FeatureServer/0")},
         "coverage": coverage,
         "fields": {"apn": "PARCELNO", "owner": "OWNER", "address": "SITEADDR", "acres": "GISACRES"},
+        "filter": "STATUS = 'ACTIVE'",
     })
 }
 
-/// Validates the spec, submits it once it passes, then says it is done.
-fn diligent(request: &Request, spec: &Value) -> Reply {
+/// A word in single quotes, as a shell would take it.
+fn quoted(text: &str) -> String {
+    format!("'{}'", text.replace('\'', r"'\''"))
+}
+
+/// Validates the spec with `program`, submits it once it passes, then says it is done.
+fn diligent(request: &Request, program: &str, spec: &Value) -> Reply {
     let last = request.last_output();
+    let command = |line: String| Reply::Calls(program.into(), json!({"command": line}));
     if last.contains("Saved ") {
         Reply::Says("Saved the adapter.".into())
     } else if last.contains("\"passed\": true") {
-        Reply::Calls("submit_spec".into(), json!({"spec": spec}))
+        command("submit".into())
     } else {
-        Reply::Calls("validate".into(), json!({"spec": spec}))
+        command(format!("validate {}", quoted(&spec.to_string())))
     }
 }
 
@@ -100,7 +107,7 @@ async fn a_county_that_the_small_model_gives_up_on_is_covered_on_the_next_rung()
     let spec = good_spec(&root, json!({"counties": ["55025"]}));
     let brain: Brain = Arc::new(move |request: &Request| match request.model.as_str() {
         "mini" => Reply::Says("I searched the Dane County site and found only a viewer.".into()),
-        _ => diligent(request, &spec),
+        _ => diligent(request, "spec", &spec),
     });
     let model = Model::start(brain).await;
     let run = scheduler(dir.path(), &model, vec!["55025".into()], false).await;
@@ -110,6 +117,7 @@ async fn a_county_that_the_small_model_gives_up_on_is_covered_on_the_next_rung()
     let saved = &registry.adapters["fake-parcels"];
     assert_eq!(saved.verification.rung, Some(1));
     assert_eq!(saved.verification.model.as_deref(), Some("big"));
+    assert_eq!(saved.filter.as_deref(), Some("STATUS = 'ACTIVE'"), "single quotes survive the command line");
     assert_eq!(registry.index["55025"], ["fake-parcels"]);
 
     let outcomes: Vec<(usize, &str)> = events(dir.path())
@@ -133,7 +141,7 @@ async fn a_county_that_the_small_model_gives_up_on_is_covered_on_the_next_rung()
     let requests = model.requests.lock().unwrap();
     let mini: Vec<&Request> = requests.iter().filter(|r| r.model == "mini").collect();
     assert_eq!(mini.len(), 2, "the small model is nudged once, then gives up");
-    assert!(mini[1].user.last().unwrap().contains("stopped without calling submit_spec"));
+    assert!(mini[1].user.last().unwrap().contains("stopped without `spec submit`"));
     let big = requests.iter().find(|r| r.model == "big").unwrap();
     assert!(big.briefing().contains("Dane County"));
     assert!(big.briefing().contains("found only a viewer"), "the next rung reads what the last one tried");
@@ -151,7 +159,7 @@ async fn a_statewide_layer_covers_the_state_without_county_agents() {
             "only the state's agent runs: {}",
             request.briefing()
         );
-        diligent(request, &spec)
+        diligent(request, "statewide_spec", &spec)
     });
     let model = Model::start(brain).await;
     let run = scheduler(dir.path(), &model, selected.map(String::from).to_vec(), true).await;
@@ -170,8 +178,8 @@ async fn a_county_without_a_service_is_marked_unavailable() {
     let brain: Brain = Arc::new(|request: &Request| {
         if request.outputs.is_empty() {
             Reply::Calls(
-                "mark_unavailable".into(),
-                json!({"reason": "paywalled", "detail": "Parcels sold at https://county.example/store"}),
+                "spec".into(),
+                json!({"command": "unavailable paywalled --evidence https://county.example/store --note \"Parcels are sold\""}),
             )
         } else {
             Reply::Says("Marked unavailable.".into())
@@ -183,6 +191,8 @@ async fn a_county_without_a_service_is_marked_unavailable() {
     let registry = Registry::open(&dir.path().join("registry")).unwrap();
     let record = &registry.unavailable["13121"];
     assert_eq!(record.reason.name(), "paywalled");
+    assert_eq!(record.evidence, ["https://county.example/store"]);
+    assert_eq!(record.note, "Parcels are sold");
     assert!(record.recheck_after > record.recorded_at + 300 * 86_400_000);
 }
 
@@ -216,7 +226,7 @@ async fn a_stopped_run_resumes_its_agent_where_it_stood() {
 
     // Second run: the same agent goes on and finishes; no new attempt starts.
     let spec = good_spec(&root, json!({"counties": ["55025"]}));
-    let working = Model::start(Arc::new(move |request: &Request| diligent(request, &spec))).await;
+    let working = Model::start(Arc::new(move |request: &Request| diligent(request, "spec", &spec))).await;
     let run = scheduler(dir.path(), &working, vec!["55025".into()], false).await;
     tokio::time::timeout(Duration::from_secs(60), run.run()).await.unwrap().unwrap();
     let all = events(dir.path());

@@ -5,67 +5,40 @@ use crate::counties::{Counties, County};
 use crate::registry::Registry;
 use crate::spec::{Source, Spec};
 
-const SPEC_FORMAT: &str = r#"An adapter spec is JSON:
-
-{
-  "id": "ga-fulton",                       // lowercase letters, digits, dashes; unique
-  "publisher": "Fulton County GIS",        // who publishes the layer
-  "source": { "kind": "arcgis-feature", "url": "https://…/arcgis/rest/services/…/MapServer/0",
-              "page_size": 1000,           // the layer's maxRecordCount, or less
-              "geojson": true },           // false when supportedQueryFormats lacks geoJSON
-  "coverage": { "counties": ["13121"] },   // or { "states": ["WI"] } for a statewide layer
-  "fields": { "apn": "PARCELID", "owner": "OWNERNME1", "address": "SITEADRESS",
-              "acres": "GISACRES", "land_use": "PROPCLASS", "assessed_value": "CNTASSDVALUE" },
-  "filter": "COUNTY_NAME = 'FULTON'",      // optional ArcGIS where clause, e.g. to pick one county
-  "notes": "CC-BY 4.0; updated weekly"     // license, terms, quirks
-}
-
-Other source kinds:
-  { "kind": "wfs", "url": "https://…/geoserver/wfs", "type_name": "ns:parcels", "version": "2.0.0",
-    "page_size": 1000, "lat_lon": true }   // lat_lon: the server wants EPSG:4326 latitude first
-  { "kind": "ogc-features", "url": "https://…/collections/parcels", "page_size": 1000 }
-  { "kind": "bulk-download", "url": "https://…/parcels.zip", "format": "shapefile-zip", "epsg": 4326 }
-    // format geojson or shapefile-zip; epsg 4326, 4269 or 3857 only
-
-Every field mapping is optional, but map apn, address or owner at least, and every field you can.
-Use the attribute names exactly as the source spells them. The runtime asks for longitude/latitude
-(outSR=4326) and pages by itself; you only describe the source."#;
-
 const HOW: &str = r#"How to find parcels:
 - Counties and states mostly publish parcels as ArcGIS REST services (…/arcgis/rest/services/…/FeatureServer/N
-  or MapServer/N), often behind an ArcGIS Hub open-data site. Use arcgis_search first, then web_search
-  (e.g. "<county> county <state> parcels gis", "<county> parcel viewer arcgis rest services").
-- An open-data page links the service: look for "View API Resources", "I want to use this", or a
-  …/FeatureServer/0 URL. A web viewer's page source or config often names its services too.
-- Use arcgis_probe on a services directory (…/arcgis/rest/services) to list folders and services, on a
-  service to list layers, and on a layer to list fields, maxRecordCount, paging and formats.
-- Pick the polygon layer of tax parcels (not lot lines, not points, not subdivisions).
-- Many counties host with a vendor (Schneider/Beacon, Tyler, Vision, county consortiums, state
-  portals); neighbouring counties often use the same host, so try what they use.
-- Then validate your spec, read the report, fix what it names, and submit_spec once it passes.
+  or MapServer/N), often behind an ArcGIS Hub open-data site. Start with `arcgis search parcels`, then
+  `web search <county> county <state> parcels gis`.
+- An open-data page links its service ("View API Resources", "I want to use this", a …/FeatureServer/0
+  URL). A web viewer's page or its config file often names its services: `web get <url> --grep 'rest/services'`.
+- `arcgis probe` a services directory, then a service, then its parcel layer. Pick the polygon layer of
+  tax parcels: not lot lines, points or subdivisions.
+- Neighbouring counties often share a host or vendor (Schneider/Beacon, Tyler, Vision, a regional
+  consortium, a state portal): try theirs first.
+- Then `spec validate '<json>'`, read the report, fix what it names, and `spec submit` once it passes.
 
-A county has no adapter only if, after a real search, its parcels are not published as a queryable
-service or file: then mark_unavailable with the reason and the links that show it. A viewer that
-loads parcels from a public ArcGIS service IS available: use that service. Never work around logins,
-keys, captchas, or terms that forbid automated access; those make a county unavailable.
+A county is unavailable only if, after a real search, its parcels are not published as a queryable
+service or file. A viewer that draws parcels from a public ArcGIS service is available: use that
+service. Never work around logins, keys, captchas, or terms that forbid automated access; those make a
+county unavailable.
 
-Be efficient: every call costs time. Do not repeat a fetch you already made."#;
+Be efficient: every command costs time, and `--help` on any command explains it. Do not repeat a
+command you already ran."#;
 
 pub fn system_prompt(state_job: bool) -> String {
     let goal = if state_job {
         "You look for ONE public layer of tax parcel polygons that covers a whole US state (a statewide \
-         parcel layer from a state GIS office, often aggregated from counties), and when you find one, \
-         write and validate an adapter spec for it with coverage { \"states\": [\"XX\"] }. Validation runs \
-         it against three counties spread across the state; at least two must pass. If a statewide layer \
-         has a county field, it covers every county without a filter. If you find no statewide layer \
-         after a real search, stop and say so in one or two sentences, naming any per-county portals \
-         you came across."
+         parcel layer from a state GIS office, often aggregated from counties). When you find one, \
+         validate a spec for it with coverage {\"states\": [\"XX\"]} using `statewide_spec validate`, and \
+         save it with `statewide_spec submit`. A statewide layer with a county field covers every county \
+         without a filter. If you find no statewide layer after a real search, stop and say so in one or \
+         two sentences, naming any per-county portals you came across."
     } else {
         "You find where one US county publishes its tax parcel polygons, then write and validate an \
-         adapter spec that reads them. Your job ends when submit_spec saves a passing spec, or when you \
-         mark the county unavailable."
+         adapter spec that reads them. Your job ends when `spec submit` saves a passing spec, or when \
+         `spec unavailable` records that the county has none."
     };
-    format!("{goal}\n\n{SPEC_FORMAT}\n\n{HOW}")
+    format!("{goal}\n\n{HOW}")
 }
 
 fn source_line(spec: &Spec) -> String {
@@ -159,6 +132,6 @@ pub fn state_briefing(state: &str, state_name: &str, counties: usize, summaries:
     text
 }
 
-pub const NUDGE: &str = "You stopped without calling submit_spec or mark_unavailable. Keep going: \
-    validate and submit a spec, or mark the county unavailable with evidence. If you are truly stuck, \
-    reply with a short summary of what you tried (URLs, layers, what failed) instead.";
+pub const NUDGE: &str = "You stopped without `spec submit` or `spec unavailable`. Keep going: validate \
+    and submit a spec, or record the county unavailable with evidence. If you are truly stuck, reply with \
+    a short summary of what you tried (URLs, layers, what failed) instead.";

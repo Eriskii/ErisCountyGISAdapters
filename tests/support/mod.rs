@@ -95,6 +95,9 @@ async fn arcgis(
         return axum::Json(json!({"error": {"code": 400, "message": "Invalid query parameters", "details": []}}))
             .into_response();
     }
+    if q.get("returnCountOnly").is_some_and(|v| v == "true") {
+        return axum::Json(json!({"count": grid.parcels.len()})).into_response();
+    }
     let all = grid.within(bbox_param(&q["geometry"]));
     let offset: usize =
         if variant == "ignores-offset" { 0 } else { q.get("resultOffset").map_or(0, |s| s.parse().unwrap()) };
@@ -168,10 +171,22 @@ async fn ogc(State(grid): State<Arc<Grid>>, Query(q): Query<HashMap<String, Stri
     axum::Json(json!({"type": "FeatureCollection", "features": features, "links": links})).into_response()
 }
 
+async fn layer() -> Response {
+    axum::Json(json!({
+        "name": "Tax Parcels", "type": "Feature Layer", "geometryType": "esriGeometryPolygon", "maxRecordCount": 50,
+        "advancedQueryCapabilities": {"supportsPagination": true}, "supportedQueryFormats": "JSON, geoJSON",
+        "extent": {"spatialReference": {"wkid": 3857}},
+        "fields": [{"name": "OBJECTID", "type": "esriFieldTypeOID"}, {"name": "PARCELNO", "type": "esriFieldTypeString", "alias": "Parcel number"},
+                   {"name": "OWNER", "type": "esriFieldTypeString"}, {"name": "SITEADDR", "type": "esriFieldTypeString"}],
+    }))
+    .into_response()
+}
+
 /// Serves `grid`; returns the server's root URL.
 pub async fn serve(grid: Grid) -> String {
     let app = Router::new()
         .route("/arcgis/{variant}/FeatureServer/0/query", get(arcgis))
+        .route("/arcgis/{variant}/FeatureServer/0", get(layer))
         .route("/wfs", get(wfs))
         .route("/ogc/collections/parcels/items", get(ogc))
         .with_state(Arc::new(grid));

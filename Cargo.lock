@@ -766,6 +766,7 @@ dependencies = [
  "futures-util",
  "geo",
  "ratatui",
+ "regex",
  "reqwest",
  "serde",
  "serde_json",
@@ -3826,9 +3827,9 @@ dependencies = [
 ]
 
 [[patch.unused]]
-name = "erisforge"
-version = "0.1.0"
-
-[[patch.unused]]
 name = "erislogin"
 version = "0.4.1"
+
+[[patch.unused]]
+name = "erisforge"
+version = "0.1.0"

@@ -7,7 +7,7 @@ use crate::registry::Registry;
 use crate::runtime::Runtime;
 use crate::spec::{Reason, Spec};
 use crate::validate::{self, Report};
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 
 /// How an agent's job ended, as its tools recorded it.
@@ -18,6 +18,14 @@ pub enum Resolution {
     Unavailable(Reason),
 }
 
+#[derive(Clone)]
+pub struct Validated {
+    pub spec: Spec,
+    pub passed: bool,
+    /// The reports as the agent read them.
+    pub report: String,
+}
+
 /// One live agent's job.
 pub struct AgentJob {
     pub job: Job,
@@ -25,8 +33,8 @@ pub struct AgentJob {
     pub model: String,
     /// Validations that failed.
     pub failures: usize,
-    /// Specs that passed validation in this attempt, by their canonical JSON.
-    pub passed: HashSet<String>,
+    /// The spec validated last, whether it passed, and its report.
+    pub last: Option<Validated>,
     pub resolution: Option<Resolution>,
     /// The tool call running or last run, for the TUI.
     pub activity: String,
@@ -45,7 +53,7 @@ impl AgentJob {
             rung,
             model,
             failures: 0,
-            passed: HashSet::new(),
+            last: None,
             resolution: None,
             activity: "starting".into(),
             tokens: Tokens::default(),
@@ -113,11 +121,4 @@ impl Work {
         };
         (ok, reports)
     }
-}
-
-/// A spec's JSON without its verification, which names what it does.
-pub fn canonical(spec: &Spec) -> String {
-    let mut spec = spec.clone();
-    spec.verification = Default::default();
-    serde_json::to_string(&spec).unwrap_or_default()
 }

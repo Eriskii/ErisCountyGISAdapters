@@ -85,12 +85,26 @@ the URLs).
    comes from the account's model listing: its small model at medium effort, then its flagship
    at medium and high.
 
-Agents' tools: `fetch` (pages as text with links), `web_search` (DuckDuckGo's HTML results;
-the Codex endpoint is driven through function tools only), `arcgis_search` (ArcGIS Hub and
-ArcGIS Online, limited to the county's or state's box), `arcgis_probe` (directories, services,
-layers: fields, record limits, paging, formats, counts), `validate`, `submit_spec` (validates
-again; saves only a passing spec), and `mark_unavailable` (counties only). Agents have no shell
-and no file system.
+Agents' tools are three command lines, each called with one `command` string, split as a
+shell splits words (quotes, backslashes, no expansion) and parsed with clap. Their help is in
+the tool description and behind `--help`; a parse error comes back as the tool's error. They
+run in-process: there is no shell, no file system and no sandbox.
+
+```text
+web get <url> [--offset N] [--grep PATTERN [--context N]]   pages as text, JSON pretty-printed
+web search <query…>                                         DuckDuckGo's results
+arcgis search <query…> [--state XX]                         ArcGIS Hub and Online, in the job's box
+arcgis probe <url> [--grep PATTERN]                         directories, services, layers and fields
+spec validate '<json>'                                      run a spec and read its report
+spec show                                                   the spec validated last, and its report
+spec submit                                                 save the spec validated last, if it passed
+spec unavailable <reason> --evidence <url>… --note "…"      county jobs only
+```
+
+`--grep` takes a case-insensitive regular expression and is how agents cut a long answer, such as
+a services directory, down to the lines they need. Statewide searches get the same `spec` as
+`statewide_spec`, without `unavailable`. The terminal view shows each agent's current command
+line.
 
 **Checkpoints.** `state/journal.jsonl` gets a line, flushed to disk, when each attempt starts
 and ends. The harness keeps its agents in `state/harness`. A run that is killed or stopped
@@ -133,7 +147,8 @@ about 30 m. It is embedded in the binary; `regenerate-counties` rebuilds it.
 
 ## Tests
 
-`cargo test` runs the validator against a fake county server on loopback (ArcGIS GeoJSON and
+`cargo test` runs the command-line tools as agents call them (help, parse errors, quoting,
+`--grep`, the spec workflow), the validator against a fake county server on loopback (ArcGIS GeoJSON and
 Esri JSON, a latitude-first WFS, OGC API Features, and broken variants: projected coordinates,
 ignored offsets, refusals, missing fields), and whole runs against a stand-in model: an agent
 that gives up and hands over to the next rung, a statewide layer covering its counties without
