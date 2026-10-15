@@ -21,9 +21,22 @@
   },
   "notes": "Statewide TN property boundaries, public-use version; covers 86 counties; counties maintaining their own systems are not included. No land use or assessed value fields published.",
   "verification": {
-    "verified_at": 1792045259524,
+    "verified_at": 1792052189464,
     "counties": [
+      "47003",
+      "47005",
+      "47007",
+      "47009",
+      "47011",
+      "47013",
+      "47015",
+      "47027",
+      "47035",
+      "47049",
+      "47075",
+      "47079",
       "47095",
+      "47107",
       "47189"
     ],
     "model": "claude-haiku-5-5",

@@ -19,11 +19,14 @@
   },
   "notes": "Public view from CAL FIRE statewide parcel compilation. Fields: PARCEL_APN, FIPS_CODE, COUNTYNAME, SITE_ADDR, SITE_CITY, SITE_ZIP. No owner, acres or land-use field exposed. Source spatial reference 102962 (CA State Plane-ish); service returns geoJSON.",
   "verification": {
-    "verified_at": 1792045389708,
+    "verified_at": 1792048627169,
     "counties": [
       "06001",
+      "06007",
       "06019",
       "06057",
+      "06059",
+      "06075",
       "06115"
     ],
     "model": "claude-haiku-5-5",
