@@ -81,9 +81,13 @@ the URLs).
    that runs out of failed validations (`--validate-budget`, 8 by default), stops without a
    result after one nudge, or fails, is retried on the next rung (after
    `--attempts-per-rung`), briefed with the last attempt's own summary and its validation
-   results. The rung that succeeds is recorded in the spec and the journal. The default ladder
-   comes from the account's model listing: its small model at medium effort, then its flagship
-   at medium and high.
+   results. The rung that succeeds is recorded in the spec and the journal. Each rung runs on
+   the provider that serves its model: Codex for the ChatGPT login, the Anthropic API for the
+   Claude login. The default ladder comes from the signed-in logins' model listings: with a
+   Claude login, the newest Haiku, then Sonnet, then ChatGPT's flagship at high effort (or Opus
+   without ChatGPT); with ChatGPT alone, its small model at medium effort, then its flagship at
+   medium and high. Claude rungs take no effort: ErisHarness's Anthropic provider sets thinking
+   for the whole provider, and it runs with thinking off.
 
 Agents' tools are three command lines, each called with one `command` string, split as a
 shell splits words (quotes, backslashes, no expansion) and parsed with clap. Their help is in
@@ -117,10 +121,13 @@ county whose adapter fails is searched again with the dead spec in its briefing.
 ```sh
 cargo build --release
 eris-county-gis login                 # ChatGPT, in the browser; --device for a device code
-eris-county-gis models                # the account's models and the default ladder
+eris-county-gis login --claude        # bind Claude Code's ~/.claude/.credentials.json
+eris-county-gis login --claude FILE   # bind another Claude Code credentials file
+eris-county-gis models                # the logins' models and the default ladder
 eris-county-gis run                   # every county, in the terminal view
 eris-county-gis run --states WI,GA --concurrency 16
 eris-county-gis run --counties 13121 --no-tui --ladder gpt-5-codex-mini:medium,gpt-5-codex:high
+eris-county-gis run --states WI --ladder haiku,sonnet
 eris-county-gis run --recheck
 eris-county-gis validate spec.json 13121
 eris-county-gis status                # the registry by state
@@ -129,9 +136,18 @@ eris-county-gis regenerate-counties   # rebuild data/counties.json.gz from censu
 ```
 
 `--registry` (default `registry`) and `--state` (default `state`) choose the directories. The
-login lives in `state/accounts/chatgpt.json`, owner-only, kept and refreshed by
-[ErisAgentAuth](../../libs/ErisAgentAuth). `ERISCOUNTYGIS_OPENAI_AUTH` and
-`ERISCOUNTYGIS_CODEX_API` point at other servers.
+logins live in `state/accounts/`, owner-only, through [ErisAgentAuth](../../libs/ErisAgentAuth):
+
+- `chatgpt.json`: the ChatGPT login, kept and refreshed.
+- `claude.json`: a bound Claude login, which is only the credentials file's path (by default
+  `$CLAUDE_CONFIG_DIR/.credentials.json`, or `~/.claude/.credentials.json`). Every request
+  reads the token from that file and nothing here refreshes it, so the Claude Code that owns it
+  stays signed in. When the file's token has expired, runs pause and the terminal view says so;
+  opening Claude Code refreshes the file, and `p` resumes. The binding lasts until the next
+  `login --claude`.
+
+`ERISCOUNTYGIS_OPENAI_AUTH`, `ERISCOUNTYGIS_CODEX_API`, `ERISCOUNTYGIS_CLAUDE_API` and
+`ERISCOUNTYGIS_CLAUDE_AUTH` point at other servers.
 
 The terminal view shows overall progress, each state, live agents with the tool call each is
 making, the ladder's rungs with their attempts, results and tokens, and the log. Keys: `p`

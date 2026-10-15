@@ -26,8 +26,6 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::Notify;
 
-pub const PROVIDER: &str = "codex";
-
 #[derive(Clone, Debug)]
 pub struct Settings {
     /// Jobs running at once.
@@ -255,7 +253,7 @@ impl Scheduler {
                     if !(self.ready)().await {
                         self.paused.store(true, Ordering::SeqCst);
                         self.work.log(
-                            "paused: sign in with ChatGPT first (`eris-county-gis login`, or l in the terminal view)",
+                            "paused: the ladder's logins are not signed in (`eris-county-gis login`, or `login --claude`)",
                         );
                         break;
                     }
@@ -427,7 +425,7 @@ impl Scheduler {
         let agent = self.harness.create_agent(AgentSpec {
             system_prompt: system,
             tools,
-            provider: PROVIDER.into(),
+            provider: step.provider.clone(),
             model: step.model.clone(),
             reasoning_effort: step.effort.clone(),
             context_window: step.context_window,

@@ -4,17 +4,20 @@
 
 mod support;
 
+use erisagentauth::App;
+use erisagentauth::claude::ClaudeAccount;
+use erisagentauth::openai::OpenAiAccount;
 use eriscountygis::counties::Counties;
 use eriscountygis::http::{Http, Limits};
 use eriscountygis::journal::{Event, Journal, Outcome};
-use eriscountygis::models::Rung;
+use eriscountygis::models::{self, CODEX, Endpoints, Rung};
 use eriscountygis::registry::Registry;
 use eriscountygis::runtime::Runtime;
-use eriscountygis::scheduler::{PROVIDER, Scheduler, Settings};
+use eriscountygis::scheduler::{Scheduler, Settings};
 use eriscountygis::tools;
 use eriscountygis::work::Work;
 use erisharness::Harness;
-use erisharness::provider::{RateGate, Responses, ResponsesConfig, StaticToken};
+use erisharness::provider::{Provider, RateGate, Responses, ResponsesConfig, StaticToken};
 use serde_json::{Value, json};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -23,12 +26,30 @@ use support::model::{Brain, Model, Reply, Request};
 
 fn ladder() -> Vec<Rung> {
     vec![
-        Rung { model: "mini".into(), effort: None, context_window: None },
-        Rung { model: "big".into(), effort: Some("high".into()), context_window: None },
+        Rung { provider: CODEX.into(), model: "mini".into(), effort: None, context_window: None },
+        Rung { provider: CODEX.into(), model: "big".into(), effort: Some("high".into()), context_window: None },
     ]
 }
 
 async fn scheduler(dir: &Path, model: &Model, counties: Vec<String>, statewide: bool) -> Arc<Scheduler> {
+    let provider: Arc<dyn Provider> = Arc::new(Responses::new(ResponsesConfig {
+        base_url: model.url.clone(),
+        headers: vec![],
+        store: false,
+        max_retries: 0,
+        credentials: Arc::new(StaticToken("token".into())),
+        gate: RateGate::new(16, 64),
+    }));
+    scheduler_on(dir, vec![(CODEX, provider)], ladder(), counties, statewide).await
+}
+
+async fn scheduler_on(
+    dir: &Path,
+    providers: Vec<(&'static str, Arc<dyn Provider>)>,
+    ladder: Vec<Rung>,
+    counties: Vec<String>,
+    statewide: bool,
+) -> Arc<Scheduler> {
     let all = Arc::new(Counties::embedded().unwrap());
     let work = Arc::new(Work {
         counties: all,
@@ -42,24 +63,15 @@ async fn scheduler(dir: &Path, model: &Model, counties: Vec<String>, statewide: 
         log: Mutex::default(),
         logged: Default::default(),
     });
-    let provider = Arc::new(Responses::new(ResponsesConfig {
-        base_url: model.url.clone(),
-        headers: vec![],
-        store: false,
-        max_retries: 0,
-        credentials: Arc::new(StaticToken("token".into())),
-        gate: RateGate::new(16, 64),
-    }));
     let empty = dir.join("harness/empty");
     std::fs::create_dir_all(&empty).unwrap();
-    let harness = Harness::builder(dir.join("harness"))
-        .provider(PROVIDER, provider)
-        .tools(tools::all(&work))
-        .open()
-        .await
-        .unwrap();
+    let mut builder = Harness::builder(dir.join("harness")).tools(tools::all(&work));
+    for (name, provider) in providers {
+        builder = builder.provider(name, provider);
+    }
+    let harness = builder.open().await.unwrap();
     let (journal, past) = Journal::open(&dir.join("journal.jsonl")).unwrap();
-    let settings = Settings { concurrency: 4, ladder: ladder(), attempts_per_rung: 1, statewide, retry_failed: false };
+    let settings = Settings { concurrency: 4, ladder, attempts_per_rung: 1, statewide, retry_failed: false };
     Scheduler::new(work, harness, journal, past, settings, counties, empty, Box::new(|| Box::pin(async { true })))
 }
 
@@ -239,4 +251,51 @@ async fn a_stopped_run_resumes_its_agent_where_it_stood() {
         .collect();
     assert_eq!(agents, [("started", started[0].as_str()), ("finished", started[0].as_str())]);
     assert!(Registry::open(&dir.path().join("registry")).unwrap().index.contains_key("55025"));
+}
+
+/// Claude Code's credentials file, holding `access` for the next hour.
+fn claude_code_file(path: &Path, access: &str) {
+    let expires =
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64 + 3_600_000;
+    let text = json!({"claudeAiOauth": {"accessToken": access, "refreshToken": "claude-code-refresh",
+        "expiresAt": expires, "scopes": ["user:inference"], "subscriptionType": "max"}});
+    std::fs::write(path, text.to_string()).unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn claude_rungs_run_on_the_bound_claude_code_login() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = support::serve(support::Grid::around_all(&interiors(&["55025"]))).await;
+    let spec = good_spec(&root, json!({"counties": ["55025"]}));
+    let brain: Brain = Arc::new(move |request: &Request| match request.model.as_str() {
+        "claude-haiku-9" => Reply::Says("Dane County shows parcels only in a viewer.".into()),
+        _ => diligent(request, "spec", &spec),
+    });
+    let model = Model::start(brain).await;
+
+    let credentials = dir.path().join("claude-code.json");
+    claude_code_file(&credentials, "from-claude-code");
+    let (events, _) = tokio::sync::broadcast::channel(16);
+    let app = App { name: "test", originator: "test" };
+    let openai = OpenAiAccount::load(dir.path().join("chatgpt.json"), &model.url, app, events.clone()).unwrap();
+    let claude = ClaudeAccount::load(dir.path().join("claude.json"), &model.url, &model.url, events).unwrap();
+    claude.bind(&credentials).await.unwrap();
+
+    let endpoints = Endpoints { codex: model.url.clone(), claude_api: model.url.clone() };
+    let listed = models::list_claude(&claude, &endpoints.claude_api).await.unwrap();
+    let ladder = models::parse_ladder("haiku, sonnet", &listed).unwrap();
+    let providers = models::providers(&openai, &claude, &endpoints, "test").await.unwrap();
+    let run = scheduler_on(dir.path(), providers, ladder, vec!["55025".into()], false).await;
+    tokio::time::timeout(Duration::from_secs(60), run.run()).await.unwrap().unwrap();
+
+    let registry = Registry::open(&dir.path().join("registry")).unwrap();
+    let saved = &registry.adapters["fake-parcels"];
+    assert_eq!(saved.verification.model.as_deref(), Some("claude-sonnet-9"));
+    assert_eq!(saved.verification.rung, Some(1));
+    let requests = model.requests.lock().unwrap();
+    assert!(requests.iter().any(|r| r.model == "claude-haiku-9"), "haiku resolves to the newest Haiku");
+    for request in requests.iter() {
+        assert_eq!(request.provider, "anthropic");
+        assert_eq!(request.authorization, "Bearer from-claude-code", "every call carries the bound file's token");
+    }
 }

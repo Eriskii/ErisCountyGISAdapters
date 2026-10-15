@@ -3,8 +3,9 @@
 
 use crate::scheduler::Scheduler;
 use crate::view::{View, human};
+use erisagentauth::claude::ClaudeAccount;
 use erisagentauth::openai::{Method, OpenAiAccount};
-use erisagentauth::{Event, Status as AccountStatus};
+use erisagentauth::{AccountSnapshot, Event, Status as AccountStatus};
 use ratatui::crossterm::event::{self, Event as TermEvent, KeyCode, KeyEventKind};
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
@@ -26,6 +27,7 @@ struct Login {
 pub async fn run(
     scheduler: Arc<Scheduler>,
     account: OpenAiAccount,
+    claude: ClaudeAccount,
     mut events: tokio::sync::broadcast::Receiver<Event>,
 ) -> anyhow::Result<()> {
     let login: Arc<Mutex<Option<Login>>> = Arc::default();
@@ -53,7 +55,7 @@ pub async fn run(
         tokio::spawn(async move { scheduler.run().await })
     };
     let mut terminal = ratatui::init();
-    let result = drive(&mut terminal, &scheduler, &account, &login, &runner).await;
+    let result = drive(&mut terminal, &scheduler, &account, &claude, &login, &runner).await;
     ratatui::restore();
     scheduler.stop().await;
     result
@@ -63,15 +65,16 @@ async fn drive(
     terminal: &mut DefaultTerminal,
     scheduler: &Arc<Scheduler>,
     account: &OpenAiAccount,
+    claude: &ClaudeAccount,
     login: &Arc<Mutex<Option<Login>>>,
     runner: &tokio::task::JoinHandle<anyhow::Result<()>>,
 ) -> anyhow::Result<()> {
     let mut log_scroll = 0usize;
     loop {
         let view = View::of(scheduler);
-        let signed_in = account.snapshot().status == AccountStatus::Connected;
+        let logins = logins(&account.snapshot(), &claude.snapshot());
         terminal.draw(|frame| {
-            draw(frame, &view, signed_in, login.lock().unwrap().as_ref(), runner.is_finished(), log_scroll)
+            draw(frame, &view, logins, login.lock().unwrap().as_ref(), runner.is_finished(), log_scroll)
         })?;
         let poll = tokio::task::spawn_blocking(|| -> std::io::Result<Option<TermEvent>> {
             if event::poll(Duration::from_millis(400))? { Ok(Some(event::read()?)) } else { Ok(None) }
@@ -122,7 +125,33 @@ async fn drive(
     }
 }
 
-fn draw(frame: &mut Frame, view: &View, signed_in: bool, login: Option<&Login>, finished: bool, log_scroll: usize) {
+/// The header's word on each login: ChatGPT's, with how to sign in when it is not, and
+/// Claude's when it is bound or failing.
+fn logins(chatgpt: &AccountSnapshot, claude: &AccountSnapshot) -> Vec<Span<'static>> {
+    let mut spans = vec![if chatgpt.status == AccountStatus::Connected {
+        Span::raw(" ChatGPT ✓ ")
+    } else {
+        Span::styled(" ChatGPT: press l to sign in ", Style::new().fg(Color::Red))
+    }];
+    match claude.status {
+        AccountStatus::Connected => spans.push(Span::raw(" Claude ✓ ")),
+        AccountStatus::Error => spans.push(Span::styled(
+            format!(" Claude: {} ", claude.detail.as_deref().unwrap_or("error")),
+            Style::new().fg(Color::Red),
+        )),
+        _ => {}
+    }
+    spans
+}
+
+fn draw(
+    frame: &mut Frame,
+    view: &View,
+    logins: Vec<Span<'static>>,
+    login: Option<&Login>,
+    finished: bool,
+    log_scroll: usize,
+) {
     let [header, gauge, middle, log, footer] = Layout::vertical([
         Constraint::Length(1),
         Constraint::Length(3),
@@ -139,24 +168,21 @@ fn draw(frame: &mut Frame, view: &View, signed_in: bool, login: Option<&Login>, 
     } else {
         Span::styled(" running ", Style::new().bg(Color::Blue).fg(Color::White))
     };
-    let account = if signed_in {
-        Span::raw(" ChatGPT ✓ ")
-    } else {
-        Span::styled(" not signed in: press l ", Style::new().fg(Color::Red))
-    };
+    let mut spans = vec![Span::styled(" ErisCountyGISAdapters ", Style::new().add_modifier(Modifier::BOLD)), state];
+    spans.extend(logins);
     frame.render_widget(
-        Line::from(vec![
-            Span::styled(" ErisCountyGISAdapters ", Style::new().add_modifier(Modifier::BOLD)),
-            state,
-            account,
-            Span::raw(format!(
-                " concurrency {} · tokens {} in ({} cached) / {} out",
-                view.concurrency,
-                human(view.tokens.input),
-                human(view.tokens.cached_input),
-                human(view.tokens.output)
-            )),
-        ]),
+        Line::from(
+            spans
+                .into_iter()
+                .chain([Span::raw(format!(
+                    " concurrency {} · tokens {} in ({} cached) / {} out",
+                    view.concurrency,
+                    human(view.tokens.input),
+                    human(view.tokens.cached_input),
+                    human(view.tokens.output)
+                ))])
+                .collect::<Vec<_>>(),
+        ),
         header,
     );
 

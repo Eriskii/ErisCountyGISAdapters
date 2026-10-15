@@ -3,20 +3,21 @@
 
 use anyhow::{Context, Result, anyhow, bail};
 use clap::{Parser, Subcommand};
+use erisagentauth::claude::{self, ClaudeAccount};
 use erisagentauth::openai::{self, Method, OpenAiAccount};
 use erisagentauth::{App, Event};
 use eriscountygis::counties::{self, Counties};
 use eriscountygis::http::{Http, Limits};
 use eriscountygis::journal::Journal;
+use eriscountygis::models::{ANTHROPIC, CODEX, Endpoints};
 use eriscountygis::registry::{Registry, Standing, now};
 use eriscountygis::runtime::Runtime;
-use eriscountygis::scheduler::{PROVIDER, Scheduler, Settings};
+use eriscountygis::scheduler::{Scheduler, Settings};
 use eriscountygis::spec::Spec;
 use eriscountygis::view::View;
 use eriscountygis::work::Work;
 use eriscountygis::{models, tools, tui, validate};
 use erisharness::Harness;
-use erisharness::provider::{RateGate, Responses, ResponsesConfig};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
@@ -51,7 +52,9 @@ enum Command {
         /// Jobs running at once.
         #[arg(long, default_value_t = 8)]
         concurrency: usize,
-        /// Models cheapest first, as model[:effort],…; by default the account's small model, then
+        /// Models cheapest first, as model[:effort],…; haiku, sonnet and opus mean the newest
+        /// Claude model of that family. By default: with a Claude login, Haiku, Sonnet, then
+        /// ChatGPT's flagship at high effort (or Opus); with ChatGPT alone, its small model, then
         /// its flagship at medium and high effort.
         #[arg(long)]
         ladder: Option<String>,
@@ -76,15 +79,21 @@ enum Command {
     },
     /// Validate a spec file for a county and print the report.
     Validate { spec: PathBuf, fips: String },
-    /// Sign in with ChatGPT.
+    /// Sign in with ChatGPT, or bind a Claude login with --claude.
     Login {
         /// Use a device code instead of the browser.
-        #[arg(long)]
+        #[arg(long, conflicts_with = "claude")]
         device: bool,
+        /// Bind Claude Code's credentials file (by default $CLAUDE_CONFIG_DIR/.credentials.json,
+        /// or ~/.claude/.credentials.json). The login is read from that file on every run and
+        /// never refreshed here, so Claude Code stays signed in; it lasts until another
+        /// `login --claude`. When the file's token has expired, open Claude Code to refresh it.
+        #[arg(long, value_name = "FILE", num_args = 0..=1)]
+        claude: Option<Option<PathBuf>>,
     },
     /// Use the ChatGPT login in a credential file another Eris app wrote.
     ImportLogin { file: PathBuf },
-    /// List the account's models and the default ladder.
+    /// List the signed-in logins' models and the default ladder.
     Models,
     /// Where the registry stands, by state.
     Status,
@@ -103,15 +112,64 @@ fn accounts_dir(state: &Path) -> Result<PathBuf> {
     Ok(dir)
 }
 
-fn account(state: &Path) -> Result<(OpenAiAccount, tokio::sync::broadcast::Receiver<Event>)> {
-    let dir = accounts_dir(state)?;
-    let (events, receiver) = tokio::sync::broadcast::channel(64);
-    let auth = std::env::var("ERISCOUNTYGIS_OPENAI_AUTH").unwrap_or_else(|_| openai::AUTH.into());
-    Ok((OpenAiAccount::load(dir.join("chatgpt.json"), &auth, APP, events)?, receiver))
+fn env_or(name: &str, default: &str) -> String {
+    std::env::var(name).unwrap_or_else(|_| default.into())
 }
 
-fn codex_api() -> String {
-    std::env::var("ERISCOUNTYGIS_CODEX_API").unwrap_or_else(|_| openai::CODEX_API.into())
+/// The ChatGPT and Claude logins kept in the run state, announcing on one channel.
+struct Accounts {
+    openai: OpenAiAccount,
+    claude: ClaudeAccount,
+    events: tokio::sync::broadcast::Receiver<Event>,
+}
+
+fn accounts(state: &Path) -> Result<Accounts> {
+    let dir = accounts_dir(state)?;
+    let (events, receiver) = tokio::sync::broadcast::channel(64);
+    let openai_auth = env_or("ERISCOUNTYGIS_OPENAI_AUTH", openai::AUTH);
+    let claude_auth = env_or("ERISCOUNTYGIS_CLAUDE_AUTH", claude::AUTH);
+    Ok(Accounts {
+        openai: OpenAiAccount::load(dir.join("chatgpt.json"), &openai_auth, APP, events.clone())?,
+        claude: ClaudeAccount::load(dir.join("claude.json"), &endpoints().claude_api, &claude_auth, events)?,
+        events: receiver,
+    })
+}
+
+fn endpoints() -> Endpoints {
+    Endpoints {
+        codex: env_or("ERISCOUNTYGIS_CODEX_API", openai::CODEX_API),
+        claude_api: env_or("ERISCOUNTYGIS_CLAUDE_API", claude::API),
+    }
+}
+
+/// Where Claude Code keeps its login: `$CLAUDE_CONFIG_DIR/.credentials.json`, or
+/// `~/.claude/.credentials.json`.
+fn claude_code_credentials() -> Result<PathBuf> {
+    let dir = match std::env::var_os("CLAUDE_CONFIG_DIR") {
+        Some(dir) => PathBuf::from(dir),
+        None => PathBuf::from(std::env::var_os("HOME").ok_or_else(|| anyhow!("HOME is not set"))?).join(".claude"),
+    };
+    Ok(dir.join(".credentials.json"))
+}
+
+/// Every signed-in login's models: Claude's, then ChatGPT's. A login whose listing fails is
+/// reported and left out.
+async fn listed_models(accounts: &Accounts) -> Vec<models::Model> {
+    let endpoints = endpoints();
+    let mut listed = Vec::new();
+    if accounts.claude.signed_in().await {
+        match models::list_claude(&accounts.claude, &endpoints.claude_api).await {
+            Ok(models) => listed.extend(models),
+            Err(error) => eprintln!("listing Claude models failed: {error:#}"),
+        }
+    }
+    if accounts.openai.signed_in().await {
+        match models::list_codex(&accounts.openai, &endpoints.codex, APP.originator).await {
+            Ok(models) => listed.extend(models),
+            Err(error) => eprintln!("listing ChatGPT models failed: {error:#}"),
+        }
+    }
+    listed
 }
 
 fn runtime(state: &Path) -> Result<Runtime> {
@@ -132,8 +190,21 @@ async fn main() -> Result<()> {
                 std::process::exit(1);
             }
         }
-        Command::Login { device } => {
-            let (account, mut events) = account(&cli.state)?;
+        Command::Login { claude: Some(path), .. } => {
+            let path = match path {
+                Some(path) => path,
+                None => claude_code_credentials()?,
+            };
+            let accounts = accounts(&cli.state)?;
+            let snapshot = accounts.claude.bind(&path).await?;
+            println!(
+                "Bound the Claude login of {} at {}. Runs read it from there and never refresh it.",
+                snapshot.email.as_deref().unwrap_or("(unknown)"),
+                path.display()
+            );
+        }
+        Command::Login { device, claude: None } => {
+            let Accounts { openai: account, mut events, .. } = accounts(&cli.state)?;
             let start = account.login(if device { Method::DeviceCode } else { Method::Browser }).await?;
             println!("Open {}", start.url);
             if let Some(code) = start.user_code {
@@ -160,10 +231,19 @@ async fn main() -> Result<()> {
             println!("Imported the login of {}.", credential.email.as_deref().unwrap_or("(unknown)"));
         }
         Command::Models => {
-            let (account, _) = account(&cli.state)?;
-            let listed = models::list(&account, &codex_api(), APP.originator).await?;
+            let accounts = accounts(&cli.state)?;
+            let listed = listed_models(&accounts).await;
+            if listed.is_empty() {
+                bail!("no models: sign in first (eris-county-gis login, or login --claude)");
+            }
             for m in &listed {
-                println!("{:28} context {:>8} efforts {}", m.id, m.context_window.unwrap_or(0), m.efforts.join(","));
+                println!(
+                    "{:10} {:28} context {:>8} efforts {}",
+                    m.provider,
+                    m.id,
+                    m.context_window.unwrap_or(0),
+                    m.efforts.join(",")
+                );
             }
             println!("\ndefault ladder:");
             for (i, rung) in models::default_ladder(&listed).iter().enumerate() {
@@ -191,21 +271,14 @@ async fn main() -> Result<()> {
             let selected = select(&all, &states, &fips)?;
             // Naming counties alone skips the statewide search unless states are named too.
             let statewide = !no_statewide && (fips.is_empty() || !states.is_empty());
-            let (account, events) = account(&cli.state)?;
-            let listed = if account.signed_in().await {
-                models::list(&account, &codex_api(), APP.originator).await.unwrap_or_else(|error| {
-                    eprintln!("listing models failed: {error:#}");
-                    Vec::new()
-                })
-            } else {
-                Vec::new()
-            };
+            let accounts = accounts(&cli.state)?;
+            let listed = listed_models(&accounts).await;
             let ladder = match &ladder {
-                Some(text) => models::parse_ladder(text, &listed),
+                Some(text) => models::parse_ladder(text, &listed)?,
                 None => models::default_ladder(&listed),
             };
             if ladder.is_empty() {
-                bail!("no model ladder: sign in first (eris-county-gis login), or pass --ladder");
+                bail!("no model ladder: sign in first (eris-county-gis login, or login --claude), or pass --ladder");
             }
             let work = Arc::new(Work {
                 counties: all.clone(),
@@ -216,22 +289,15 @@ async fn main() -> Result<()> {
                 log: Mutex::new(Default::default()),
                 logged: Default::default(),
             });
-            let provider = Arc::new(Responses::new(ResponsesConfig {
-                base_url: codex_api(),
-                headers: vec![
-                    ("OpenAI-Beta".into(), "responses=experimental".into()),
-                    ("originator".into(), APP.originator.into()),
-                ],
-                store: false,
-                max_retries: 6,
-                credentials: Arc::new(account.clone()),
-                gate: RateGate::new(16, 256),
-            }));
+            let providers = models::providers(&accounts.openai, &accounts.claude, &endpoints(), APP.originator).await?;
             let harness_dir = cli.state.join("harness");
             let empty = harness_dir.join("empty");
             std::fs::create_dir_all(&empty)?;
-            let harness = Harness::builder(&harness_dir)
-                .provider(PROVIDER, provider)
+            let mut builder = Harness::builder(&harness_dir);
+            for (name, provider) in providers {
+                builder = builder.provider(name, provider);
+            }
+            let harness = builder
                 .tools(tools::all(&work))
                 .max_concurrent_turns(256)
                 .open()
@@ -239,11 +305,17 @@ async fn main() -> Result<()> {
                 .context("opening the agents' state")?;
             let (journal, past) = Journal::open(&cli.state.join("journal.jsonl"))?;
             let settings = Settings { concurrency, ladder, attempts_per_rung, statewide, retry_failed };
-            let ready_account = account.clone();
+            // Jobs start while every login the ladder runs on gives a token.
+            let needs_codex = settings.ladder.iter().any(|r| r.provider == CODEX);
+            let needs_claude = settings.ladder.iter().any(|r| r.provider == ANTHROPIC);
+            let (openai, claude) = (accounts.openai.clone(), accounts.claude.clone());
             let ready: Box<dyn Fn() -> futures_util::future::BoxFuture<'static, bool> + Send + Sync> =
                 Box::new(move || {
-                    let account = ready_account.clone();
-                    Box::pin(async move { account.current().await.is_ok() })
+                    let (openai, claude) = (openai.clone(), claude.clone());
+                    Box::pin(async move {
+                        (!needs_codex || openai.current().await.is_ok())
+                            && (!needs_claude || claude.current().await.is_ok())
+                    })
                 });
             let scheduler = Scheduler::new(work, harness, journal, past, settings, selected, empty, ready);
             if recheck {
@@ -252,7 +324,7 @@ async fn main() -> Result<()> {
             if no_tui {
                 headless(scheduler).await?;
             } else {
-                tui::run(scheduler, account, events).await?;
+                tui::run(scheduler, accounts.openai, accounts.claude, accounts.events).await?;
             }
         }
     }
