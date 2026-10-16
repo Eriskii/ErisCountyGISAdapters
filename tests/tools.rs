@@ -3,14 +3,14 @@
 
 mod support;
 
-use eriscountygis::assist::Assistant;
-use eriscountygis::counties::Counties;
-use eriscountygis::http::{Http, Limits};
-use eriscountygis::journal::Job;
-use eriscountygis::registry::Registry;
-use eriscountygis::runtime::{Runtime, VALIDATE_WITHIN};
-use eriscountygis::tools::{Arcgis, SpecTool, Web};
-use eriscountygis::work::{AgentJob, Work};
+use erisgisscraper::assist::Assistant;
+use erisgisscraper::counties::Counties;
+use erisgisscraper::http::{Http, Limits};
+use erisgisscraper::journal::Job;
+use erisgisscraper::registry::Registry;
+use erisgisscraper::runtime::{Runtime, VALIDATE_WITHIN};
+use erisgisscraper::tools::{Arcgis, SpecTool, Web};
+use erisgisscraper::work::{AgentJob, Work};
 use erisharness::tools::{Content, Tool, ToolOutput};
 use serde_json::json;
 use std::sync::{Arc, Mutex};
@@ -166,7 +166,7 @@ async fn a_statewide_search_cannot_mark_counties_unavailable() {
 /// A Claude login bound to a Claude Code credentials file in `dir`, on the stand-in API.
 async fn claude_assistant(dir: &std::path::Path, model: &support::model::Model) -> Assistant {
     use erisagentauth::claude::ClaudeAccount;
-    let expires = eriscountygis::registry::now() + 3_600_000;
+    let expires = erisgisscraper::registry::now() + 3_600_000;
     let credentials = dir.join("claude-code.json");
     std::fs::write(
         &credentials,
@@ -180,9 +180,9 @@ async fn claude_assistant(dir: &std::path::Path, model: &support::model::Model) 
         erisagentauth::openai::OpenAiAccount::load(dir.join("chatgpt.json"), &model.url, app, events.clone()).unwrap();
     let claude = ClaudeAccount::load(dir.join("claude.json"), &model.url, &model.url, events).unwrap();
     claude.bind(&credentials).await.unwrap();
-    let endpoints = eriscountygis::models::Endpoints { codex: model.url.clone(), claude_api: model.url.clone() };
-    let listed = eriscountygis::models::list_claude(&claude, &model.url).await.unwrap();
-    let providers = eriscountygis::models::providers(&openai, &claude, &endpoints, "test").await.unwrap();
+    let endpoints = erisgisscraper::models::Endpoints { codex: model.url.clone(), claude_api: model.url.clone() };
+    let listed = erisgisscraper::models::list_claude(&claude, &model.url).await.unwrap();
+    let providers = erisgisscraper::models::providers(&openai, &claude, &endpoints, "test").await.unwrap();
     Assistant::from_models(&listed, &providers, &claude, &model.url)
 }
 

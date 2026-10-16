@@ -23,8 +23,5 @@ pub mod view;
 pub mod work;
 
 /// Sent with every request to a county's servers, so their administrators know who is asking.
-pub const USER_AGENT: &str = concat!(
-    "ErisCountyGISAdapters/",
-    env!("CARGO_PKG_VERSION"),
-    " (parcel adapter validator; +https://github.com/Eriskii)"
-);
+pub const USER_AGENT: &str =
+    concat!("ErisGISScraper/", env!("CARGO_PKG_VERSION"), " (parcel adapter validator; +https://github.com/Eriskii)");

@@ -1,15 +1,15 @@
 //! Calls to the real search and reading models on a bound Claude login, run by hand:
-//! `ERISCOUNTYGIS_LIVE_STATE=<state dir> cargo test --test live -- --ignored --nocapture`.
+//! `ERISGISSCRAPER_LIVE_STATE=<state dir> cargo test --test live -- --ignored --nocapture`.
 
 use erisagentauth::App;
 use erisagentauth::claude::{self, ClaudeAccount};
 use erisagentauth::openai::OpenAiAccount;
-use eriscountygis::assist::{Assistant, Reader, Searcher};
-use eriscountygis::models::{self, Endpoints};
+use erisgisscraper::assist::{Assistant, Reader, Searcher};
+use erisgisscraper::models::{self, Endpoints};
 use std::path::PathBuf;
 
 async fn assistant() -> Assistant {
-    let state = PathBuf::from(std::env::var("ERISCOUNTYGIS_LIVE_STATE").expect("ERISCOUNTYGIS_LIVE_STATE"));
+    let state = PathBuf::from(std::env::var("ERISGISSCRAPER_LIVE_STATE").expect("ERISGISSCRAPER_LIVE_STATE"));
     let (events, _) = tokio::sync::broadcast::channel(16);
     let app = App { name: "live", originator: "live" };
     let claude =
@@ -38,10 +38,10 @@ async fn a_real_search_and_read() {
         println!("- {} | {} | {}", f.title, f.url, f.about);
     }
     assert!(!found.is_empty());
-    let http = eriscountygis::http::Http::new(eriscountygis::http::Limits::default()).unwrap();
+    let http = erisgisscraper::http::Http::new(erisgisscraper::http::Limits::default()).unwrap();
     let url = "https://landgauge.com/ohio/wyandot-county";
     let fetched = http.get(url, 8 << 20).await.unwrap();
-    let page = eriscountygis::tools::shown(&fetched.text(), &fetched.content_type, &fetched.url);
+    let page = erisgisscraper::tools::shown(&fetched.text(), &fetched.content_type, &fetched.url);
     let (answer, tokens) =
         assistant.read(url, &page, "which links lead to parcel data or GIS services?").await.unwrap();
     println!("read ({} characters of page): {tokens:?}\n{answer}", page.chars().count());

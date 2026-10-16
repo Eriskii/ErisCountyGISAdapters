@@ -1,10 +1,11 @@
-# ErisCountyGISAdapters
+# ErisGISScraper
 
-A registry of parcel adapters for US counties, and the program that writes it. An adapter is a
+The program that writes and keeps a registry of parcel adapters for US counties. An adapter is a
 small declarative spec that points at a county's public parcel service (or a statewide one) and
-maps its attributes to a normalized schema. The registry holds pointers, never parcel data.
+maps its attributes to a normalized schema. The registry holds pointers, never parcel data, and
+lives in [ErisData](https://github.com/Eriskii/ErisData) under `GIS/`.
 
-`eris-county-gis` runs [ErisHarness](https://github.com/Eriskii/ErisHarness) agents over the
+`eris-gis-scraper` runs [ErisHarness](https://github.com/Eriskii/ErisHarness) agents over the
 3,222 counties and county equivalents of the 50 states, DC and Puerto Rico. Agents search for each
 county's parcel layer, write a spec, and prove it works with a validator that actually queries the
 service. A spec reaches the registry only by passing it.
@@ -12,9 +13,9 @@ service. A spec reaches the registry only by passing it.
 ## The registry
 
 ```text
-registry/adapters/<id>.json        one spec each
-registry/unavailable/<fips>.json   why a county has no adapter, and when to look again
-registry/index.json                county FIPS → ids of the adapters verified for it
+GIS/adapters/<id>.json        one spec each
+GIS/unavailable/<fips>.json   why a county has no adapter, and when to look again
+GIS/index.json                county FIPS → ids of the adapters verified for it
 ```
 
 A spec:
@@ -138,23 +139,24 @@ county whose adapter fails is searched again with the dead spec in its briefing.
 
 ```sh
 cargo build --release
-eris-county-gis login                 # ChatGPT, in the browser; --device for a device code
-eris-county-gis login --claude        # bind Claude Code's ~/.claude/.credentials.json
-eris-county-gis login --claude FILE   # bind another Claude Code credentials file
-eris-county-gis models                # the logins' models and the default ladder
-eris-county-gis run                   # every county, in the terminal view
-eris-county-gis run --states WI,GA --concurrency 16
-eris-county-gis run --counties 13121 --no-tui --ladder gpt-5-codex-mini:medium,gpt-5-codex:high
-eris-county-gis run --states WI --ladder haiku:medium,sonnet:high,opus:max
-eris-county-gis run --recheck
-eris-county-gis validate spec.json 13121
-eris-county-gis status                # the registry by state
-eris-county-gis notes --out notes.md  # field notes: unavailable counties, what stopped agents, costs
-eris-county-gis import-login ~/.config/ErisMaps/agents/account.json
-eris-county-gis regenerate-counties   # rebuild data/counties.json.gz from census.gov
+eris-gis-scraper login                 # ChatGPT, in the browser; --device for a device code
+eris-gis-scraper login --claude        # bind Claude Code's ~/.claude/.credentials.json
+eris-gis-scraper login --claude FILE   # bind another Claude Code credentials file
+eris-gis-scraper models                # the logins' models and the default ladder
+eris-gis-scraper run                   # every county, in the terminal view
+eris-gis-scraper run --states WI,GA --concurrency 16
+eris-gis-scraper run --counties 13121 --no-tui --ladder gpt-5-codex-mini:medium,gpt-5-codex:high
+eris-gis-scraper run --states WI --ladder haiku:medium,sonnet:high,opus:max
+eris-gis-scraper run --recheck
+eris-gis-scraper validate spec.json 13121
+eris-gis-scraper status                # the registry by state
+eris-gis-scraper notes --out notes.md  # field notes: unavailable counties, what stopped agents, costs
+eris-gis-scraper import-login ~/.config/ErisMaps/agents/account.json
+eris-gis-scraper regenerate-counties   # rebuild data/counties.json.gz from census.gov
 ```
 
-`--registry` (default `registry`) and `--state` (default `state`) choose the directories. The
+`--registry` (default `../../data/ErisData/GIS`, the ErisData checkout in the monorepo) and
+`--state` (default `state`) choose the directories. The
 logins live in `state/accounts/`, owner-only, through [ErisAgentAuth](../../libs/ErisAgentAuth):
 
 - `chatgpt.json`: the ChatGPT login, kept and refreshed.
@@ -165,8 +167,8 @@ logins live in `state/accounts/`, owner-only, through [ErisAgentAuth](../../libs
   opening Claude Code refreshes the file, and `p` resumes. The binding lasts until the next
   `login --claude`.
 
-`ERISCOUNTYGIS_OPENAI_AUTH`, `ERISCOUNTYGIS_CODEX_API`, `ERISCOUNTYGIS_CLAUDE_API` and
-`ERISCOUNTYGIS_CLAUDE_AUTH` point at other servers.
+`ERISGISSCRAPER_OPENAI_AUTH`, `ERISGISSCRAPER_CODEX_API`, `ERISGISSCRAPER_CLAUDE_API` and
+`ERISGISSCRAPER_CLAUDE_AUTH` point at other servers.
 
 The terminal view shows overall progress, each state, the claim checks under way, live agents
 with the tool call each is making, the ladder's rungs with their attempts, results and tokens, and the log. Keys: `p`
@@ -188,5 +190,5 @@ Esri JSON, a latitude-first WFS, OGC API Features, and broken variants: projecte
 ignored offsets, refusals, missing fields), and whole runs against a stand-in model: an agent
 that gives up and hands over to the next rung, a statewide layer covering its counties without
 county agents, a county marked unavailable, and a run stopped mid-turn that resumes its agent.
-`ERISCOUNTYGIS_LIVE_STATE=<state dir> cargo test --test live -- --ignored --nocapture` runs one
+`ERISGISSCRAPER_LIVE_STATE=<state dir> cargo test --test live -- --ignored --nocapture` runs one
 real search and one real page read on the Claude login bound in that state directory.

@@ -1,4 +1,4 @@
-//! `eris-county-gis`: runs agents over US counties to write parcel adapters, validates specs,
+//! `eris-gis-scraper`: runs agents over US counties to write parcel adapters, validates specs,
 //! signs in, and reports where the registry stands.
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -6,18 +6,18 @@ use clap::{Parser, Subcommand};
 use erisagentauth::claude::{self, ClaudeAccount};
 use erisagentauth::openai::{self, Method, OpenAiAccount};
 use erisagentauth::{App, Event};
-use eriscountygis::assist::Assistant;
-use eriscountygis::counties::{self, Counties};
-use eriscountygis::http::{Http, Limits};
-use eriscountygis::journal::Journal;
-use eriscountygis::models::{ANTHROPIC, CODEX, Endpoints};
-use eriscountygis::registry::{Registry, Standing, now};
-use eriscountygis::runtime::{Runtime, VALIDATE_WITHIN};
-use eriscountygis::scheduler::{Scheduler, Settings};
-use eriscountygis::spec::Spec;
-use eriscountygis::view::View;
-use eriscountygis::work::Work;
-use eriscountygis::{models, tools, tui, validate};
+use erisgisscraper::assist::Assistant;
+use erisgisscraper::counties::{self, Counties};
+use erisgisscraper::http::{Http, Limits};
+use erisgisscraper::journal::Journal;
+use erisgisscraper::models::{ANTHROPIC, CODEX, Endpoints};
+use erisgisscraper::registry::{Registry, Standing, now};
+use erisgisscraper::runtime::{Runtime, VALIDATE_WITHIN};
+use erisgisscraper::scheduler::{Scheduler, Settings};
+use erisgisscraper::spec::Spec;
+use erisgisscraper::view::View;
+use erisgisscraper::work::Work;
+use erisgisscraper::{models, tools, tui, validate};
 use erisharness::Harness;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -25,13 +25,13 @@ use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-const APP: App = App { name: "ErisCountyGISAdapters", originator: "eriscountygis" };
+const APP: App = App { name: "ErisGISScraper", originator: "erisgisscraper" };
 
 #[derive(Parser)]
-#[command(name = "eris-county-gis", about = "Write and validate a parcel adapter for every US county")]
+#[command(name = "eris-gis-scraper", about = "Write and validate a parcel adapter for every US county")]
 struct Cli {
-    /// The adapter registry the repository publishes.
-    #[arg(long, global = true, default_value = "registry")]
+    /// The adapter registry: ErisData's `GIS/`, checked out beside this repository in the monorepo.
+    #[arg(long, global = true, default_value = "../../data/ErisData/GIS")]
     registry: PathBuf,
     /// Run state: the journal, the agents, the login, downloads. Kept out of the repository.
     #[arg(long, global = true, default_value = "state")]
@@ -135,8 +135,8 @@ struct Accounts {
 fn accounts(state: &Path) -> Result<Accounts> {
     let dir = accounts_dir(state)?;
     let (events, receiver) = tokio::sync::broadcast::channel(64);
-    let openai_auth = env_or("ERISCOUNTYGIS_OPENAI_AUTH", openai::AUTH);
-    let claude_auth = env_or("ERISCOUNTYGIS_CLAUDE_AUTH", claude::AUTH);
+    let openai_auth = env_or("ERISGISSCRAPER_OPENAI_AUTH", openai::AUTH);
+    let claude_auth = env_or("ERISGISSCRAPER_CLAUDE_AUTH", claude::AUTH);
     Ok(Accounts {
         openai: OpenAiAccount::load(dir.join("chatgpt.json"), &openai_auth, APP, events.clone())?,
         claude: ClaudeAccount::load(dir.join("claude.json"), &endpoints().claude_api, &claude_auth, events)?,
@@ -146,8 +146,8 @@ fn accounts(state: &Path) -> Result<Accounts> {
 
 fn endpoints() -> Endpoints {
     Endpoints {
-        codex: env_or("ERISCOUNTYGIS_CODEX_API", openai::CODEX_API),
-        claude_api: env_or("ERISCOUNTYGIS_CLAUDE_API", claude::API),
+        codex: env_or("ERISGISSCRAPER_CODEX_API", openai::CODEX_API),
+        claude_api: env_or("ERISGISSCRAPER_CLAUDE_API", claude::API),
     }
 }
 
@@ -238,7 +238,7 @@ async fn main() -> Result<()> {
                 serde_json::from_slice(&std::fs::read(&file)?).context("the file is not a ChatGPT credential")?;
             let path = accounts_dir(&cli.state)?.join("chatgpt.json");
             let text = serde_json::to_vec_pretty(&serde_json::json!({"version": 1, "credential": credential}))?;
-            eriscountygis::registry::write_atomic(&path, &text)?;
+            erisgisscraper::registry::write_atomic(&path, &text)?;
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
             println!("Imported the login of {}.", credential.email.as_deref().unwrap_or("(unknown)"));
@@ -247,7 +247,7 @@ async fn main() -> Result<()> {
             let accounts = accounts(&cli.state)?;
             let listed = listed_models(&accounts).await;
             if listed.is_empty() {
-                bail!("no models: sign in first (eris-county-gis login, or login --claude)");
+                bail!("no models: sign in first (eris-gis-scraper login, or login --claude)");
             }
             for m in &listed {
                 let efforts = match &m.cannot_run {
@@ -266,7 +266,7 @@ async fn main() -> Result<()> {
             let counties = Counties::embedded()?;
             let registry = Registry::open(&cli.registry)?;
             let events = Journal::read(&cli.state.join("journal.jsonl"))?;
-            let text = eriscountygis::notes::notes(&counties, &registry, &events, now());
+            let text = erisgisscraper::notes::notes(&counties, &registry, &events, now());
             match out {
                 Some(path) => {
                     std::fs::write(&path, text)?;
@@ -302,7 +302,7 @@ async fn main() -> Result<()> {
                 None => models::default_ladder(&listed),
             };
             if ladder.is_empty() {
-                bail!("no model ladder: sign in first (eris-county-gis login, or login --claude), or pass --ladder");
+                bail!("no model ladder: sign in first (eris-gis-scraper login, or login --claude), or pass --ladder");
             }
             let providers = models::providers(&accounts.openai, &accounts.claude, &endpoints(), APP.originator).await?;
             let assistant = Assistant::from_models(&listed, &providers, &accounts.claude, &endpoints().claude_api);

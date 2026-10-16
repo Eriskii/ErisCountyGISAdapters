@@ -3,12 +3,12 @@
 
 mod support;
 
-use eriscountygis::counties::Counties;
-use eriscountygis::geom::Bbox;
-use eriscountygis::http::{Http, Limits};
-use eriscountygis::lookup::{self, View};
-use eriscountygis::registry::Registry;
-use eriscountygis::runtime::{Runtime, VALIDATE_WITHIN};
+use erisgisscraper::counties::Counties;
+use erisgisscraper::geom::Bbox;
+use erisgisscraper::http::{Http, Limits};
+use erisgisscraper::lookup::{self, View};
+use erisgisscraper::registry::Registry;
+use erisgisscraper::runtime::{Runtime, VALIDATE_WITHIN};
 use serde_json::{Value, json};
 use std::path::Path;
 

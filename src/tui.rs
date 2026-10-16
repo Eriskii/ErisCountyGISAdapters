@@ -168,7 +168,7 @@ fn draw(
     } else {
         Span::styled(" running ", Style::new().bg(Color::Blue).fg(Color::White))
     };
-    let mut spans = vec![Span::styled(" ErisCountyGISAdapters ", Style::new().add_modifier(Modifier::BOLD)), state];
+    let mut spans = vec![Span::styled(" ErisGISScraper ", Style::new().add_modifier(Modifier::BOLD)), state];
     spans.extend(logins);
     frame.render_widget(
         Line::from(

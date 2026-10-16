@@ -318,7 +318,7 @@ impl Scheduler {
                     if !(self.ready)().await {
                         self.paused.store(true, Ordering::SeqCst);
                         self.work.log(
-                            "paused: the ladder's logins are not signed in (`eris-county-gis login`, or `login --claude`)",
+                            "paused: the ladder's logins are not signed in (`eris-gis-scraper login`, or `login --claude`)",
                         );
                         break;
                     }

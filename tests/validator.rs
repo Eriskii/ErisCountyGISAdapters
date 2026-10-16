@@ -3,11 +3,11 @@
 
 mod support;
 
-use eriscountygis::counties::{Counties, County};
-use eriscountygis::http::{Http, Limits};
-use eriscountygis::runtime::{Runtime, VALIDATE_WITHIN};
-use eriscountygis::spec::Spec;
-use eriscountygis::validate::{Report, validate};
+use erisgisscraper::counties::{Counties, County};
+use erisgisscraper::http::{Http, Limits};
+use erisgisscraper::runtime::{Runtime, VALIDATE_WITHIN};
+use erisgisscraper::spec::Spec;
+use erisgisscraper::validate::{Report, validate};
 use serde_json::{Value, json};
 use std::sync::OnceLock;
 
@@ -160,7 +160,7 @@ async fn a_county_outside_the_coverage_fails() {
     let root = server().await;
     let mut spec =
         spec(json!({"kind": "arcgis-feature", "url": format!("{root}/arcgis/good/FeatureServer/0")}), good_fields());
-    spec.coverage = eriscountygis::spec::Coverage::States(vec!["MN".into()]);
+    spec.coverage = erisgisscraper::spec::Coverage::States(vec!["MN".into()]);
     assert_eq!(failed(&run(&spec).await), ["coverage"]);
 }
 

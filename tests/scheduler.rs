@@ -7,16 +7,16 @@ mod support;
 use erisagentauth::App;
 use erisagentauth::claude::ClaudeAccount;
 use erisagentauth::openai::OpenAiAccount;
-use eriscountygis::assist::Assistant;
-use eriscountygis::counties::Counties;
-use eriscountygis::http::{Http, Limits};
-use eriscountygis::journal::{Event, Journal, Outcome};
-use eriscountygis::models::{self, CODEX, Endpoints, Rung};
-use eriscountygis::registry::Registry;
-use eriscountygis::runtime::{Runtime, VALIDATE_WITHIN};
-use eriscountygis::scheduler::{Scheduler, Settings};
-use eriscountygis::tools;
-use eriscountygis::work::Work;
+use erisgisscraper::assist::Assistant;
+use erisgisscraper::counties::Counties;
+use erisgisscraper::http::{Http, Limits};
+use erisgisscraper::journal::{Event, Journal, Outcome};
+use erisgisscraper::models::{self, CODEX, Endpoints, Rung};
+use erisgisscraper::registry::Registry;
+use erisgisscraper::runtime::{Runtime, VALIDATE_WITHIN};
+use erisgisscraper::scheduler::{Scheduler, Settings};
+use erisgisscraper::tools;
+use erisgisscraper::work::Work;
 use erisharness::Harness;
 use erisharness::provider::{Provider, RateGate, Responses, ResponsesConfig, StaticToken};
 use serde_json::{Value, json};
@@ -359,7 +359,7 @@ async fn stopping_a_run_stops_a_validation_under_way() {
 /// A statewide adapter for Alabama read from `url`, saved unverified, as a state's search
 /// leaves it.
 fn claim_alabama(dir: &Path, url: String) {
-    let spec: eriscountygis::spec::Spec = serde_json::from_value(json!({
+    let spec: erisgisscraper::spec::Spec = serde_json::from_value(json!({
         "version": 1, "id": "al-statewide", "publisher": "Alabama GIS",
         "source": {"kind": "arcgis-feature", "url": url},
         "coverage": {"states": ["AL"]}, "fields": {"apn": "PARCELNO"},

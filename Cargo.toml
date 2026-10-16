@@ -1,12 +1,12 @@
 [package]
-name = "eriscountygis"
+name = "erisgisscraper"
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
 description = "ErisHarness agents that find, write and validate a parcel adapter for every US county"
 
 [[bin]]
-name = "eris-county-gis"
+name = "eris-gis-scraper"
 path = "src/main.rs"
 
 [dependencies]
