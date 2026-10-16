@@ -1,13 +1,14 @@
 //! The validator against a fake county server: specs that work pass, and each way a spec is
 //! commonly wrong fails the check that names it.
 
-mod support;
+use erisgis::testing as support;
 
-use erisgisscraper::counties::{Counties, County};
-use erisgisscraper::http::{Http, Limits};
-use erisgisscraper::runtime::{Runtime, VALIDATE_WITHIN};
-use erisgisscraper::spec::Spec;
-use erisgisscraper::validate::{Report, validate};
+use erisgis::counties::{Counties, County};
+use erisgis::http::{Http, Limits};
+use erisgis::parcels::PARCELS;
+use erisgis::runtime::{Runtime, VALIDATE_WITHIN};
+use erisgis::spec::Spec;
+use erisgis::validate::{Report, validate};
 use serde_json::{Value, json};
 use std::sync::OnceLock;
 
@@ -46,7 +47,7 @@ fn good_fields() -> Value {
 
 async fn run(spec: &Spec) -> Report {
     let cache = tempfile::tempdir().unwrap();
-    validate(&runtime(cache.path()), spec, dane()).await
+    validate(&runtime(cache.path()), &PARCELS, spec, dane()).await
 }
 
 fn failed(report: &Report) -> Vec<&str> {
@@ -160,7 +161,7 @@ async fn a_county_outside_the_coverage_fails() {
     let root = server().await;
     let mut spec =
         spec(json!({"kind": "arcgis-feature", "url": format!("{root}/arcgis/good/FeatureServer/0")}), good_fields());
-    spec.coverage = erisgisscraper::spec::Coverage::States(vec!["MN".into()]);
+    spec.coverage = erisgis::spec::Coverage::States(vec!["MN".into()]);
     assert_eq!(failed(&run(&spec).await), ["coverage"]);
 }
 
@@ -188,7 +189,7 @@ async fn validation_that_runs_too_long_fails_on_time() {
     let spec =
         spec(json!({"kind": "arcgis-feature", "url": format!("{root}/arcgis/stalls/FeatureServer/0")}), good_fields());
     let started = std::time::Instant::now();
-    let report = validate(&runtime, &spec, dane()).await;
+    let report = validate(&runtime, &PARCELS, &spec, dane()).await;
     assert!(started.elapsed() < std::time::Duration::from_secs(5));
     assert_eq!(failed(&report), ["time"]);
     assert!(report.summary().contains("1 s"), "{}", report.summary());

@@ -38,7 +38,7 @@ async fn a_real_search_and_read() {
         println!("- {} | {} | {}", f.title, f.url, f.about);
     }
     assert!(!found.is_empty());
-    let http = erisgisscraper::http::Http::new(erisgisscraper::http::Limits::default()).unwrap();
+    let http = erisgis::http::Http::new(erisgis::http::Limits::default()).unwrap();
     let url = "https://landgauge.com/ohio/wyandot-county";
     let fetched = http.get(url, 8 << 20).await.unwrap();
     let page = erisgisscraper::tools::shown(&fetched.text(), &fetched.content_type, &fetched.url);

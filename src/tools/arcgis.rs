@@ -2,10 +2,10 @@
 
 use super::text::{short, strip_html, window};
 use crate::cli;
-use crate::geom::Bbox;
 use crate::journal::Job;
 use crate::work::Work;
 use clap::{CommandFactory, Parser, Subcommand};
+use erisgis::geom::Bbox;
 use erisharness::tools::{Tool, ToolContext, ToolOutput};
 use futures_util::future::BoxFuture;
 use serde_json::Value;

@@ -753,6 +753,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "erisgis"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "erisgis",
+ "flate2",
+ "futures-util",
+ "geo",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "shapefile",
+ "tempfile",
+ "tokio",
+ "url",
+ "zip",
+]
+
+[[package]]
 name = "erisgisscraper"
 version = "0.1.0"
 dependencies = [
@@ -761,21 +781,18 @@ dependencies = [
  "clap",
  "crossterm",
  "erisagentauth",
+ "erisgis",
  "erisharness",
- "flate2",
  "futures-util",
- "geo",
  "ratatui",
  "regex",
  "reqwest",
  "serde",
  "serde_json",
- "shapefile",
  "tempfile",
  "tokio",
  "url",
  "uuid",
- "zip",
 ]
 
 [[package]]

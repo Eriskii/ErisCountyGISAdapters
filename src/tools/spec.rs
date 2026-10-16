@@ -4,11 +4,11 @@
 
 use crate::cli;
 use crate::journal::Job;
-use crate::registry::now;
-use crate::spec::{Reason, SPEC_VERSION, Spec, Unavailable};
 use crate::work::{Resolution, Validated, Work};
-use clap::builder::PossibleValuesParser;
 use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
+use erisgis::Dataset;
+use erisgis::registry::now;
+use erisgis::spec::{Reason, SPEC_VERSION, Spec, Unavailable};
 use erisharness::tools::{Tool, ToolContext, ToolOutput};
 use futures_util::future::BoxFuture;
 use serde_json::{Value, json};
@@ -17,30 +17,45 @@ use std::sync::Arc;
 pub const STATEWIDE_SPEC: &str = "statewide_spec";
 const DAY_MS: u64 = 86_400_000;
 
-const FORMAT: &str = r#"A spec is JSON:
+/// The spec format, for `spec --help`, with the dataset's fields; a county search's also lists
+/// the reasons `spec unavailable` takes.
+fn format(dataset: &Dataset, statewide: bool) -> String {
+    let fields: Vec<String> = dataset.fields.iter().map(|f| format!("  {:15} {}", f.name, f.about)).collect();
+    let identifying = match dataset.identifying {
+        [one] => one.to_string(),
+        [rest @ .., last] => format!("{} or {last}", rest.join(", ")),
+        [] => String::new(),
+    };
+    let reasons: Vec<&str> = dataset.reasons.iter().map(|r| r.name()).collect();
+    let reasons =
+        if statewide { String::new() } else { format!("`spec unavailable` takes one of: {}.\n\n", reasons.join(", ")) };
+    format!(
+        r#"A spec is JSON:
 
-{
+{{
   "id": "ga-fulton",                       lowercase letters, digits, dashes; unique
   "publisher": "Fulton County GIS",        who publishes the layer
   "official": true,                        required; see below
-  "source": {"kind": "arcgis-feature", "url": "https://…/arcgis/rest/services/…/MapServer/0",
+  "source": {{"kind": "arcgis-feature", "url": "https://…/arcgis/rest/services/…/MapServer/0",
              "page_size": 1000,            the layer's maxRecordCount, or less
-             "geojson": true},             false when supportedQueryFormats lacks geoJSON
-  "coverage": {"counties": ["13121"]},     or {"states": ["WI"]} for a statewide layer
-  "fields": {"apn": "PARCELID", "owner": "OWNERNME1", "address": "SITEADRESS",
-             "acres": "GISACRES", "land_use": "PROPCLASS", "assessed_value": "CNTASSDVALUE"},
+             "geojson": true}},             false when supportedQueryFormats lacks geoJSON
+  "coverage": {{"counties": ["13121"]}},     or {{"states": ["WI"]}} for a statewide layer
+  "fields": {example},
   "filter": "COUNTY_NAME = 'FULTON'",      optional ArcGIS where clause
   "notes": "CC-BY 4.0; updated weekly"     license, terms, quirks
-}
+}}
 
 Other sources:
-  {"kind": "wfs", "url": "https://…/geoserver/wfs", "type_name": "ns:parcels", "version": "2.0.0",
-   "page_size": 1000, "lat_lon": true}    lat_lon: the server wants EPSG:4326 latitude first
-  {"kind": "ogc-features", "url": "https://…/collections/parcels", "page_size": 1000}
-  {"kind": "bulk-download", "url": "https://…/parcels.zip", "format": "shapefile-zip", "epsg": 4326}
+  {{"kind": "wfs", "url": "https://…/geoserver/wfs", "type_name": "ns:layer", "version": "2.0.0",
+   "page_size": 1000, "lat_lon": true}}    lat_lon: the server wants EPSG:4326 latitude first
+  {{"kind": "ogc-features", "url": "https://…/collections/{name}", "page_size": 1000}}
+  {{"kind": "bulk-download", "url": "https://…/{name}.zip", "format": "shapefile-zip", "epsg": 4326}}
                                            format geojson or shapefile-zip; epsg 4326, 4269 or 3857
 
-Map apn, address or owner at least, and every field you can, with attribute names exactly as the
+The fields of {many}:
+{fields}
+
+Map {identifying} at least, and every field you can, with attribute names exactly as the
 source spells them. The runtime asks for longitude/latitude and pages by itself.
 
 "official" says who stands behind the layer. true: the county or city, its state, or a vendor
@@ -49,16 +64,17 @@ copy someone else hosts, such as a personal ArcGIS Online item, a class project 
 say whose copy it is in "notes". Use a copy only when nothing official is queryable. spec submit
 refuses a spec that does not say.
 
-Give the JSON as one argument in single quotes. Inside them, write a single quote as '\'' :
-  spec validate '{"id": "x", …, "filter": "NAME = '\''FULTON'\''"}'"#;
+{reasons}Give the JSON as one argument in single quotes. Inside them, write a single quote as '\'' :
+  spec validate '{{"id": "x", …, "filter": "NAME = '\''FULTON'\''"}}'"#,
+        example = dataset.agents.example_fields,
+        name = dataset.name,
+        many = dataset.many,
+        fields = fields.join("\n"),
+    )
+}
 
 #[derive(Parser)]
-#[command(
-    name = "spec",
-    disable_version_flag = true,
-    about = "Validate adapter specs and save the one that passes.",
-    after_long_help = FORMAT
-)]
+#[command(name = "spec", disable_version_flag = true, about = "Validate adapter specs and save the ones that pass.")]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -67,7 +83,7 @@ struct Cli {
 #[derive(Subcommand)]
 enum Command {
     /// Run a spec for real against your county (in a statewide search, against three counties
-    /// spread across the state; two must pass) and print the report: each check, the parcels
+    /// spread across the state; two must pass) and print the report: each check, the features
     /// found, field fill rates, and the source's attribute names and sample attributes. Each
     /// failing validation uses one of your attempts.
     Validate {
@@ -76,15 +92,15 @@ enum Command {
     },
     /// Show the spec validated last and its report.
     Show,
-    /// Save the spec validated last to the registry, if it passed. This ends your job.
+    /// Save the spec validated last to the registry, if it passed.
     Submit,
-    /// Record that your county publishes no usable parcel service, with links that show it.
-    /// This ends your job; use it only after a real search.
+    /// Record that your county publishes no usable service of the dataset, with links that
+    /// show it. This ends your job; use it only after a real search.
     #[command(
         after_help = "Example: spec unavailable paywalled --evidence https://county.example/gis-data-sales --note \"Parcel data is sold per county\""
     )]
     Unavailable {
-        #[arg(value_parser = PossibleValuesParser::new(Reason::ALL.map(Reason::name)))]
+        /// Why: one of the dataset's reasons (see --help).
         reason: String,
         /// Links that show it: the viewer, the price list, the terms, the login page.
         #[arg(long, required = true, num_args = 1..)]
@@ -107,7 +123,14 @@ impl SpecTool {
     }
 
     fn command(&self) -> clap::Command {
-        let command = Cli::command().name(self.program());
+        let dataset = self.work.dataset;
+        let reasons: Vec<&'static str> = dataset.reasons.iter().map(|r| r.name()).collect();
+        let command = Cli::command()
+            .name(self.program())
+            .after_long_help(format(dataset, self.statewide))
+            .mut_subcommand("unavailable", |c| {
+                c.mut_arg("reason", |a| a.value_parser(clap::builder::PossibleValuesParser::new(reasons)))
+            });
         if self.statewide { command.mut_subcommand("unavailable", |c| c.hide(true)) } else { command }
     }
 
@@ -251,12 +274,20 @@ impl SpecTool {
                 Err(error) => return ToolOutput::error(format!("{error:#}")),
             }
         };
-        self.work.with_agent(agent, |a| a.resolution = Some(Resolution::Covered(saved.id.clone())));
+        self.work.with_agent(agent, |a| {
+            a.resolution = Some(Resolution::Covered(saved.id.clone()));
+            a.saved += 1;
+        });
         self.work.log(format!("{}: saved {} (verified for {})", job.label(), saved.id, passing.join(", ")));
-        ToolOutput::text(format!("Saved {}. Your job is done: reply with one line saying what you saved.", saved.id))
+        ToolOutput::text(format!("Saved {}. {}", saved.id, self.work.dataset.agents.saved))
     }
 
     fn unavailable(&self, agent: &str, fips: &str, reason: Reason, evidence: Vec<String>, note: String) -> ToolOutput {
+        if self.work.with_agent(agent, |a| a.resolution.is_some()).unwrap_or(false) {
+            return ToolOutput::error(
+                "you saved an adapter for this county, so it is not unavailable; reply with one line",
+            );
+        }
         let wait = match reason {
             Reason::Paywalled | Reason::TosForbidsAutomation => 365,
             _ => 180,

@@ -7,13 +7,13 @@ mod support;
 use erisagentauth::App;
 use erisagentauth::claude::ClaudeAccount;
 use erisagentauth::openai::OpenAiAccount;
+use erisgis::counties::Counties;
+use erisgis::http::{Http, Limits};
+use erisgis::registry::Registry;
+use erisgis::runtime::{Runtime, VALIDATE_WITHIN};
 use erisgisscraper::assist::Assistant;
-use erisgisscraper::counties::Counties;
-use erisgisscraper::http::{Http, Limits};
 use erisgisscraper::journal::{Event, Journal, Outcome};
 use erisgisscraper::models::{self, CODEX, Endpoints, Rung};
-use erisgisscraper::registry::Registry;
-use erisgisscraper::runtime::{Runtime, VALIDATE_WITHIN};
 use erisgisscraper::scheduler::{Scheduler, Settings};
 use erisgisscraper::tools;
 use erisgisscraper::work::Work;
@@ -33,6 +33,16 @@ fn ladder() -> Vec<Rung> {
 }
 
 async fn scheduler(dir: &Path, model: &Model, counties: Vec<String>, statewide: bool) -> Arc<Scheduler> {
+    scheduler_for(dir, model, counties, statewide, &erisgis::parcels::PARCELS).await
+}
+
+async fn scheduler_for(
+    dir: &Path,
+    model: &Model,
+    counties: Vec<String>,
+    statewide: bool,
+    dataset: &'static erisgis::Dataset,
+) -> Arc<Scheduler> {
     let provider: Arc<dyn Provider> = Arc::new(Responses::new(ResponsesConfig {
         base_url: model.url.clone(),
         headers: vec![],
@@ -41,7 +51,7 @@ async fn scheduler(dir: &Path, model: &Model, counties: Vec<String>, statewide: 
         credentials: Arc::new(StaticToken("token".into())),
         gate: RateGate::new(16, 64),
     }));
-    scheduler_on(dir, vec![(CODEX, provider)], Assistant::default(), ladder(), counties, statewide).await
+    scheduler_on(dir, vec![(CODEX, provider)], Assistant::default(), ladder(), counties, statewide, dataset).await
 }
 
 async fn scheduler_on(
@@ -51,9 +61,11 @@ async fn scheduler_on(
     ladder: Vec<Rung>,
     counties: Vec<String>,
     statewide: bool,
+    dataset: &'static erisgis::Dataset,
 ) -> Arc<Scheduler> {
     let all = Arc::new(Counties::embedded().unwrap());
     let work = Arc::new(Work {
+        dataset,
         counties: all,
         registry: Mutex::new(Registry::open(&dir.join("registry")).unwrap()),
         runtime: Runtime {
@@ -299,7 +311,9 @@ async fn claude_rungs_run_on_the_bound_claude_code_login() {
     let ladder = models::parse_ladder("haiku:low, sonnet:high", &listed).unwrap();
     let providers = models::providers(&openai, &claude, &endpoints, "test").await.unwrap();
     let assistant = Assistant::from_models(&listed, &providers, &claude, &endpoints.claude_api);
-    let run = scheduler_on(dir.path(), providers, assistant, ladder, vec!["55025".into()], false).await;
+    let run =
+        scheduler_on(dir.path(), providers, assistant, ladder, vec!["55025".into()], false, &erisgis::parcels::PARCELS)
+            .await;
     tokio::time::timeout(Duration::from_secs(60), run.run()).await.unwrap().unwrap();
 
     let registry = Registry::open(&dir.path().join("registry")).unwrap();
@@ -359,7 +373,7 @@ async fn stopping_a_run_stops_a_validation_under_way() {
 /// A statewide adapter for Alabama read from `url`, saved unverified, as a state's search
 /// leaves it.
 fn claim_alabama(dir: &Path, url: String) {
-    let spec: erisgisscraper::spec::Spec = serde_json::from_value(json!({
+    let spec: erisgis::spec::Spec = serde_json::from_value(json!({
         "version": 1, "id": "al-statewide", "publisher": "Alabama GIS",
         "source": {"kind": "arcgis-feature", "url": url},
         "coverage": {"states": ["AL"]}, "fields": {"apn": "PARCELNO"},
@@ -428,4 +442,39 @@ async fn a_failed_statewide_check_is_not_repeated_after_a_restart() {
     assert_eq!(checks, 1, "the restart made no check");
     let attempts = events(dir.path()).iter().filter(|e| matches!(e, Event::Started { .. })).count();
     assert_eq!(attempts, 4, "the retry climbs the ladder once more, then the run ends");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_zoning_agent_that_saved_one_layer_is_asked_once_about_the_rest_of_the_county() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = support::serve(support::Grid::around_all(&interiors(&["55025"]))).await;
+    let layer = |id: &str| {
+        json!({"id": id, "publisher": "Dane County", "official": true,
+               "source": {"kind": "arcgis-feature", "url": format!("{root}/zoning/FeatureServer/0"), "page_size": 4},
+               "coverage": {"counties": ["55025"]}, "fields": {"zone": "ZONING", "zone_name": "ZONE_DESC"}})
+    };
+    let (county, city) = (layer("wi-dane"), layer("wi-madison"));
+    let brain: Brain = Arc::new(move |request: &Request| {
+        let asked_again = request.user.len() > 1;
+        let last = request.last_output();
+        let command = |line: String| Reply::Calls("spec".into(), json!({"command": line}));
+        let done = if asked_again { last.contains("Saved wi-madison") } else { last.contains("Saved ") };
+        if done {
+            Reply::Says("Saved.".into())
+        } else if last.contains("\"passed\": true") {
+            command("submit".into())
+        } else {
+            command(format!("validate {}", quoted(&(if asked_again { &city } else { &county }).to_string())))
+        }
+    });
+    let model = Model::start(brain).await;
+    let run = scheduler_for(dir.path(), &model, vec!["55025".into()], false, &erisgis::zoning::ZONING).await;
+    tokio::time::timeout(Duration::from_secs(60), run.run()).await.unwrap().unwrap();
+
+    let registry = Registry::open(&dir.path().join("registry")).unwrap();
+    assert_eq!(registry.index["55025"], ["wi-dane", "wi-madison"]);
+    let requests = model.requests.lock().unwrap();
+    let asked: Vec<&String> = requests.iter().filter_map(|r| r.user.get(1)).collect();
+    assert!(asked.iter().all(|m| m.contains("largest city")), "{asked:?}");
+    assert_eq!(requests.last().unwrap().user.len(), 2, "asked once, not again after the second layer");
 }

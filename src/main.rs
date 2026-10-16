@@ -1,23 +1,24 @@
-//! `eris-gis-scraper`: runs agents over US counties to write parcel adapters, validates specs,
-//! signs in, and reports where the registry stands.
+//! `eris-gis-scraper`: runs agents over US counties to write a dataset's adapters, validates
+//! specs, signs in, and reports where the registry stands.
 
 use anyhow::{Context, Result, anyhow, bail};
 use clap::{Parser, Subcommand};
 use erisagentauth::claude::{self, ClaudeAccount};
 use erisagentauth::openai::{self, Method, OpenAiAccount};
 use erisagentauth::{App, Event};
+use erisgis::counties::{self, Counties};
+use erisgis::http::{Http, Limits};
+use erisgis::registry::{Registry, Standing, now};
+use erisgis::runtime::{Runtime, VALIDATE_WITHIN};
+use erisgis::spec::Spec;
+use erisgis::{Dataset, validate};
 use erisgisscraper::assist::Assistant;
-use erisgisscraper::counties::{self, Counties};
-use erisgisscraper::http::{Http, Limits};
 use erisgisscraper::journal::Journal;
 use erisgisscraper::models::{ANTHROPIC, CODEX, Endpoints};
-use erisgisscraper::registry::{Registry, Standing, now};
-use erisgisscraper::runtime::{Runtime, VALIDATE_WITHIN};
 use erisgisscraper::scheduler::{Scheduler, Settings};
-use erisgisscraper::spec::Spec;
 use erisgisscraper::view::View;
 use erisgisscraper::work::Work;
-use erisgisscraper::{models, tools, tui, validate};
+use erisgisscraper::{models, tools, tui};
 use erisharness::Harness;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -28,12 +29,17 @@ use std::time::Duration;
 const APP: App = App { name: "ErisGISScraper", originator: "erisgisscraper" };
 
 #[derive(Parser)]
-#[command(name = "eris-gis-scraper", about = "Write and validate a parcel adapter for every US county")]
+#[command(name = "eris-gis-scraper", about = "Write and validate an adapter of an ErisGIS dataset for every US county")]
 struct Cli {
-    /// The adapter registry: ErisData's `GIS/`, checked out beside this repository in the monorepo.
+    /// The dataset: parcels or zoning.
+    #[arg(long, global = true, default_value = "parcels", value_parser = clap::builder::PossibleValuesParser::new(erisgis::dataset::ALL.map(|d| d.name)))]
+    dataset: String,
+    /// The registries: ErisData's `GIS/`, checked out beside this repository in the monorepo.
+    /// Each dataset's is the folder named after it.
     #[arg(long, global = true, default_value = "../../data/ErisData/GIS")]
     registry: PathBuf,
-    /// Run state: the journal, the agents, the login, downloads. Kept out of the repository.
+    /// Run state: the logins and downloads, and each dataset's journal and agents in a folder
+    /// named after it. Kept out of the repository.
     #[arg(long, global = true, default_value = "state")]
     state: PathBuf,
     #[command(subcommand)]
@@ -78,7 +84,7 @@ enum Command {
         #[arg(long)]
         no_tui: bool,
     },
-    /// Validate a spec file for a county and print the report.
+    /// Validate a spec file of the dataset for a county and print the report.
     Validate { spec: PathBuf, fips: String },
     /// Sign in with ChatGPT, or bind a Claude login with --claude.
     Login {
@@ -96,7 +102,7 @@ enum Command {
     ImportLogin { file: PathBuf },
     /// List the signed-in logins' models and the default ladder.
     Models,
-    /// Where the registry stands, by state.
+    /// Where the dataset's registry stands, by state.
     Status,
     /// Field notes from the run, as Markdown: unavailable counties by reason with their
     /// evidence, what stopped agents grouped by cause, the hosts behind the most trouble, and
@@ -108,7 +114,7 @@ enum Command {
     },
     /// Rebuild the embedded county file from census.gov.
     RegenerateCounties {
-        #[arg(default_value = "data/counties.json.gz")]
+        #[arg(default_value = "erisgis/data/counties.json.gz")]
         out: PathBuf,
     },
 }
@@ -192,12 +198,15 @@ fn runtime(state: &Path) -> Result<Runtime> {
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
+    let dataset = Dataset::named(&cli.dataset).expect("a listed dataset");
+    let registry_dir = cli.registry.join(dataset.name);
+    let run_state = cli.state.join(dataset.name);
     match cli.command {
         Command::Validate { spec, fips } => {
             let counties = Counties::embedded()?;
             let county = counties.get(&fips).ok_or_else(|| anyhow!("no county {fips}"))?;
             let spec: Spec = serde_json::from_slice(&std::fs::read(&spec)?).context("reading the spec")?;
-            let report = validate::validate(&runtime(&cli.state)?, &spec, county).await;
+            let report = validate::validate(&runtime(&cli.state)?, dataset, &spec, county).await;
             println!("{}", serde_json::to_string_pretty(&report)?);
             if !report.passed {
                 std::process::exit(1);
@@ -238,7 +247,7 @@ async fn main() -> Result<()> {
                 serde_json::from_slice(&std::fs::read(&file)?).context("the file is not a ChatGPT credential")?;
             let path = accounts_dir(&cli.state)?.join("chatgpt.json");
             let text = serde_json::to_vec_pretty(&serde_json::json!({"version": 1, "credential": credential}))?;
-            erisgisscraper::registry::write_atomic(&path, &text)?;
+            erisgis::registry::write_atomic(&path, &text)?;
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
             println!("Imported the login of {}.", credential.email.as_deref().unwrap_or("(unknown)"));
@@ -261,11 +270,11 @@ async fn main() -> Result<()> {
                 println!("  {i}: {}", rung.label());
             }
         }
-        Command::Status => status(&cli.registry)?,
+        Command::Status => status(&registry_dir)?,
         Command::Notes { out } => {
             let counties = Counties::embedded()?;
-            let registry = Registry::open(&cli.registry)?;
-            let events = Journal::read(&cli.state.join("journal.jsonl"))?;
+            let registry = Registry::open(&registry_dir)?;
+            let events = Journal::read(&run_state.join("journal.jsonl"))?;
             let text = erisgisscraper::notes::notes(&counties, &registry, &events, now());
             match out {
                 Some(path) => {
@@ -307,8 +316,9 @@ async fn main() -> Result<()> {
             let providers = models::providers(&accounts.openai, &accounts.claude, &endpoints(), APP.originator).await?;
             let assistant = Assistant::from_models(&listed, &providers, &accounts.claude, &endpoints().claude_api);
             let work = Arc::new(Work {
+                dataset,
                 counties: all.clone(),
-                registry: Mutex::new(Registry::open(&cli.registry)?),
+                registry: Mutex::new(Registry::open(&registry_dir)?),
                 runtime: runtime(&cli.state)?,
                 assistant,
                 agents: Mutex::new(Default::default()),
@@ -316,7 +326,7 @@ async fn main() -> Result<()> {
                 log: Mutex::new(Default::default()),
                 logged: Default::default(),
             });
-            let harness_dir = cli.state.join("harness");
+            let harness_dir = run_state.join("harness");
             let empty = harness_dir.join("empty");
             std::fs::create_dir_all(&empty)?;
             let mut builder = Harness::builder(&harness_dir);
@@ -329,7 +339,7 @@ async fn main() -> Result<()> {
                 .open()
                 .await
                 .context("opening the agents' state")?;
-            let (journal, past) = Journal::open(&cli.state.join("journal.jsonl"))?;
+            let (journal, past) = Journal::open(&run_state.join("journal.jsonl"))?;
             let settings = Settings { concurrency, ladder, attempts_per_rung, statewide, retry_failed };
             // Jobs start while every login the ladder runs on gives a token.
             let needs_codex = settings.ladder.iter().any(|r| r.provider == CODEX);

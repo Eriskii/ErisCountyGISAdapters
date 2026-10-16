@@ -3,12 +3,15 @@
 
 mod support;
 
+use erisgis::Dataset;
+use erisgis::counties::Counties;
+use erisgis::http::{Http, Limits};
+use erisgis::parcels::PARCELS;
+use erisgis::registry::Registry;
+use erisgis::runtime::{Runtime, VALIDATE_WITHIN};
+use erisgis::zoning::ZONING;
 use erisgisscraper::assist::Assistant;
-use erisgisscraper::counties::Counties;
-use erisgisscraper::http::{Http, Limits};
 use erisgisscraper::journal::Job;
-use erisgisscraper::registry::Registry;
-use erisgisscraper::runtime::{Runtime, VALIDATE_WITHIN};
 use erisgisscraper::tools::{Arcgis, SpecTool, Web};
 use erisgisscraper::work::{AgentJob, Work};
 use erisharness::tools::{Content, Tool, ToolOutput};
@@ -20,7 +23,12 @@ fn work(dir: &std::path::Path, job: Job) -> Arc<Work> {
 }
 
 fn work_with(dir: &std::path::Path, job: Job, assistant: Assistant) -> Arc<Work> {
+    work_on(dir, job, assistant, &PARCELS)
+}
+
+fn work_on(dir: &std::path::Path, job: Job, assistant: Assistant, dataset: &'static Dataset) -> Arc<Work> {
     let work = Arc::new(Work {
+        dataset,
         counties: Arc::new(Counties::embedded().unwrap()),
         registry: Mutex::new(Registry::open(&dir.join("registry")).unwrap()),
         runtime: Runtime {
@@ -166,7 +174,7 @@ async fn a_statewide_search_cannot_mark_counties_unavailable() {
 /// A Claude login bound to a Claude Code credentials file in `dir`, on the stand-in API.
 async fn claude_assistant(dir: &std::path::Path, model: &support::model::Model) -> Assistant {
     use erisagentauth::claude::ClaudeAccount;
-    let expires = erisgisscraper::registry::now() + 3_600_000;
+    let expires = erisgis::registry::now() + 3_600_000;
     let credentials = dir.join("claude-code.json");
     std::fs::write(
         &credentials,
@@ -259,4 +267,44 @@ async fn web_get_shows_a_page_in_small_windows() {
     let shown = text(&web.run("agent", &format!("get {root}/page")).await);
     assert!(shown.contains("[characters 0–4000 of"), "{}", &shown[..200.min(shown.len())]);
     assert!(shown.len() < 4_500);
+}
+
+#[tokio::test]
+async fn the_spec_help_and_reasons_are_the_datasets() {
+    let dir = tempfile::tempdir().unwrap();
+    let parcels = SpecTool { work: work(dir.path(), Job::County("55025".into())), statewide: false };
+    let zoning = SpecTool {
+        work: work_on(dir.path(), Job::County("55025".into()), Assistant::default(), &ZONING),
+        statewide: false,
+    };
+    let (parcels_help, zoning_help) = (parcels.description(), zoning.description());
+    assert!(parcels_help.contains("Map apn, address or owner at least"), "{parcels_help}");
+    assert!(zoning_help.contains("Map zone or zone_name at least"), "{zoning_help}");
+    assert!(zoning_help.contains("\"zone\": \"ZONING\"") && !zoning_help.contains("PARCELID"), "{zoning_help}");
+    assert!(zoning_help.contains("none-exists") && !parcels_help.contains("none-exists"));
+    let none = "unavailable none-exists --evidence https://x.org --note x";
+    assert!(parcels.run("agent", none).await.is_error, "every county has parcels");
+    assert!(!zoning.run("agent", none).await.is_error, "a county may not zone");
+}
+
+#[tokio::test]
+async fn a_zoning_agent_submits_each_jurisdictions_layer() {
+    let root = server().await;
+    let dir = tempfile::tempdir().unwrap();
+    let work = work_on(dir.path(), Job::County("55025".into()), Assistant::default(), &ZONING);
+    let spec = SpecTool { work: work.clone(), statewide: false };
+    let layer = |id: &str| {
+        json!({"id": id, "publisher": "Dane County", "official": true,
+               "source": {"kind": "arcgis-feature", "url": format!("{root}/zoning/FeatureServer/0"), "page_size": 4},
+               "coverage": {"counties": ["55025"]}, "fields": {"zone": "ZONING", "zone_name": "ZONE_DESC"}})
+    };
+    for id in ["wi-dane", "wi-madison"] {
+        let validated = text(&spec.run("agent", &format!("validate '{}'", layer(id))).await);
+        assert!(validated.contains("\"passed\": true"), "{validated}");
+        let saved = text(&spec.run("agent", "submit").await);
+        assert!(saved.contains(&format!("Saved {id}")) && saved.contains("other jurisdictions"), "{saved}");
+    }
+    assert_eq!(work.registry.lock().unwrap().index["55025"], ["wi-dane", "wi-madison"]);
+    let refused = spec.run("agent", "unavailable no-public-gis --evidence https://x.org --note x").await;
+    assert!(refused.is_error, "a county with a saved layer is not unavailable");
 }

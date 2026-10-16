@@ -1,0 +1,28 @@
+[package]
+name = "erisgis"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Declarative adapters for public GIS layers of US counties: specs, the registry, the runtime that reads features through them, and the validator that proves a spec works"
+
+[features]
+# The fake county GIS server the tests of this crate and its users run against.
+testing = ["dep:axum"]
+
+[dependencies]
+anyhow = "1.0.104"
+axum = { version = "0.8.9", optional = true }
+flate2 = "1.1.10"
+futures-util = "0.3.34"
+geo = "0.33.1"
+reqwest = { version = "0.13.5", default-features = false, features = ["json", "query", "rustls", "stream", "gzip", "brotli", "deflate"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+shapefile = "0.9.0"
+tokio = { version = "1.53.1", features = ["full"] }
+url = "2.5.8"
+zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
+
+[dev-dependencies]
+erisgis = { path = ".", features = ["testing"] }
+tempfile = "3.27.0"

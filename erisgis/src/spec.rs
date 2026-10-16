@@ -1,7 +1,8 @@
-//! Adapter specs: where a county's parcels are published and how their fields map to the
-//! normalized parcel schema. A spec holds pointers, never parcel data. `Unavailable` records why
+//! Adapter specs: where a county publishes a dataset's layer and how its attributes map to the
+//! dataset's normalized fields. A spec holds pointers, never features. `Unavailable` records why
 //! a county has no adapter, and when to look again.
 
+use crate::dataset::Dataset;
 use anyhow::{Result, bail, ensure};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -22,7 +23,10 @@ pub struct Spec {
     pub official: Option<bool>,
     pub source: Source,
     pub coverage: Coverage,
-    pub fields: Fields,
+    /// Source attribute names by normalized field, the dataset's fields only. Every field is
+    /// optional; geometry always comes from the source's geometry.
+    #[serde(default)]
+    pub fields: BTreeMap<String, String>,
     /// A static filter, such as an ArcGIS `where` clause or a CQL filter; none by default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub filter: Option<String>,
@@ -132,44 +136,9 @@ impl Coverage {
     }
 }
 
-/// Source attribute names for each normalized field. Every field is optional; geometry always
-/// comes from the source's geometry.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct Fields {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub apn: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub owner: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub address: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub acres: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub land_use: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub assessed_value: Option<String>,
-}
-
-impl Fields {
-    /// Each mapped normalized field and its source attribute.
-    pub fn mapped(&self) -> BTreeMap<&'static str, &str> {
-        [
-            ("apn", &self.apn),
-            ("owner", &self.owner),
-            ("address", &self.address),
-            ("acres", &self.acres),
-            ("land_use", &self.land_use),
-            ("assessed_value", &self.assessed_value),
-        ]
-        .into_iter()
-        .filter_map(|(k, v)| v.as_deref().map(|v| (k, v)))
-        .collect()
-    }
-}
-
 impl Spec {
-    /// Checks what can be checked without the network.
-    pub fn check(&self) -> Result<()> {
+    /// Checks what can be checked without the network, as a spec of `dataset`.
+    pub fn check(&self, dataset: &Dataset) -> Result<()> {
         ensure!(self.version == SPEC_VERSION, "spec version must be {SPEC_VERSION}");
         ensure!(
             !self.id.is_empty()
@@ -178,6 +147,13 @@ impl Spec {
             "id must be 1-64 lowercase letters, digits and dashes"
         );
         ensure!(!self.publisher.trim().is_empty(), "publisher is required");
+        for (field, source) in &self.fields {
+            if dataset.field(field).is_none() {
+                let names: Vec<&str> = dataset.fields.iter().map(|f| f.name).collect();
+                bail!("{field} is not a field of {}; they are {}", dataset.name, names.join(", "));
+            }
+            ensure!(!source.trim().is_empty(), "the source attribute for {field} is empty");
+        }
         let url = match &self.source {
             Source::ArcgisFeature { url, .. }
             | Source::Wfs { url, .. }
@@ -232,15 +208,19 @@ pub enum Reason {
     LoginRequired,
     /// The terms of use forbid automated access.
     TosForbidsAutomation,
+    /// There is nothing to publish: the county and the places in it have none of the dataset,
+    /// as a county that does not zone has no zoning.
+    NoneExists,
 }
 
 impl Reason {
-    pub const ALL: [Reason; 5] = [
+    pub const ALL: [Reason; 6] = [
         Reason::NoPublicGis,
         Reason::ViewerOnly,
         Reason::Paywalled,
         Reason::LoginRequired,
         Reason::TosForbidsAutomation,
+        Reason::NoneExists,
     ];
 
     pub fn name(self) -> &'static str {
@@ -250,6 +230,7 @@ impl Reason {
             Reason::Paywalled => "paywalled",
             Reason::LoginRequired => "login-required",
             Reason::TosForbidsAutomation => "tos-forbids-automation",
+            Reason::NoneExists => "none-exists",
         }
     }
 
@@ -278,6 +259,8 @@ pub struct Unavailable {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::parcels::PARCELS;
+    use crate::zoning::ZONING;
     use serde_json::json;
 
     #[test]
@@ -289,7 +272,7 @@ mod tests {
             "fields": {"apn": "PARCELID", "owner": "OWNERNME1"},
         }))
         .unwrap();
-        spec.check().unwrap();
+        spec.check(&PARCELS).unwrap();
         assert_eq!(
             spec.source,
             Source::ArcgisFeature {
@@ -298,7 +281,10 @@ mod tests {
                 geojson: true
             }
         );
-        assert_eq!(spec.fields.mapped().into_iter().collect::<Vec<_>>(), [("apn", "PARCELID"), ("owner", "OWNERNME1")]);
+        assert_eq!(
+            spec.fields.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect::<Vec<_>>(),
+            [("apn", "PARCELID"), ("owner", "OWNERNME1")]
+        );
         assert_eq!(spec.host().as_deref(), Some("services3.arcgis.com"));
         assert!(spec.coverage.claims("55025", |_| Some("WI".into())));
         assert_eq!(spec.official, None, "a spec that does not say is neither official nor a copy");
@@ -320,7 +306,7 @@ mod tests {
         let with = |path: &str, value: serde_json::Value| {
             let mut v = base.clone();
             *v.pointer_mut(path).unwrap() = value;
-            serde_json::from_value::<Spec>(v).unwrap().check()
+            serde_json::from_value::<Spec>(v).unwrap().check(&PARCELS)
         };
         assert!(with("/id", json!("ok")).is_ok());
         assert!(with("/id", json!("Has Spaces")).is_err());
@@ -329,5 +315,22 @@ mod tests {
         let bulk =
             json!({"kind": "bulk-download", "url": "https://x.org/p.zip", "format": "shapefile-zip", "epsg": 2285});
         assert!(with("/source", bulk).is_err());
+    }
+
+    #[test]
+    fn a_spec_maps_its_own_datasets_fields_only() {
+        let spec = |fields: serde_json::Value| -> Spec {
+            serde_json::from_value(json!({
+                "version": 1, "id": "ok", "publisher": "p",
+                "source": {"kind": "ogc-features", "url": "https://example.org/collections/zoning"},
+                "coverage": {"counties": ["13121"]}, "fields": fields,
+            }))
+            .unwrap()
+        };
+        assert!(spec(json!({"zone": "ZONE_CODE"})).check(&ZONING).is_ok());
+        let error = spec(json!({"zone": "ZONE_CODE"})).check(&PARCELS).unwrap_err().to_string();
+        assert!(error.contains("zone is not a field of parcels"), "{error}");
+        assert!(spec(json!({"apn": "PIN"})).check(&ZONING).is_err());
+        assert!(spec(json!({"zone": " "})).check(&ZONING).is_err());
     }
 }

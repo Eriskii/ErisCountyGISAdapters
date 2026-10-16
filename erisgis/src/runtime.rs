@@ -1,5 +1,5 @@
-//! Reads parcels through a spec: the features of its source within a bounding box, each with
-//! its geometry in longitude/latitude, its source attributes, and the normalized fields.
+//! Reads features through a spec: those of its source within a bounding box, each with its
+//! geometry in longitude/latitude, its source attributes, and the normalized fields.
 
 use crate::geom::{self, Bbox};
 use crate::http::Http;
@@ -16,12 +16,12 @@ const PAGE_CAP: usize = 64 << 20;
 /// Biggest bulk download.
 const BULK_CAP: usize = 768 << 20;
 
-pub struct Parcel {
+pub struct Feature {
     pub geometry: MultiPolygon,
     pub attributes: Map<String, Value>,
 }
 
-impl Parcel {
+impl Feature {
     /// An attribute by name, ignoring case, as servers differ on it.
     pub fn attribute(&self, name: &str) -> Option<&Value> {
         self.attributes
@@ -30,14 +30,13 @@ impl Parcel {
     }
 
     /// The normalized fields the spec maps, those with a value.
-    pub fn normalized(&self, spec: &Spec) -> BTreeMap<&'static str, Value> {
+    pub fn normalized(&self, spec: &Spec) -> BTreeMap<String, Value> {
         spec.fields
-            .mapped()
-            .into_iter()
+            .iter()
             .filter_map(|(field, source)| {
                 let value = self.attribute(source)?;
                 let empty = value.is_null() || value.as_str().is_some_and(|s| s.trim().is_empty());
-                (!empty).then(|| (field, value.clone()))
+                (!empty).then(|| (field.clone(), value.clone()))
             })
             .collect()
     }
@@ -52,7 +51,7 @@ impl Parcel {
 }
 
 pub struct Fetch {
-    pub parcels: Vec<Parcel>,
+    pub features: Vec<Feature>,
     /// Requests made, one per page.
     pub pages: usize,
     /// Whether more features were there than were read.
@@ -70,7 +69,7 @@ const TIMED_OUT: &str = "Unable to perform query";
 const ARCGIS_RETRIES: [std::time::Duration; 2] = [std::time::Duration::from_secs(2), std::time::Duration::from_secs(5)];
 
 /// How long one county's validation may take by default: a source slower than this is too slow
-/// to read parcels from.
+/// to read features from.
 pub const VALIDATE_WITHIN: std::time::Duration = std::time::Duration::from_secs(120);
 
 pub struct Runtime {
@@ -82,7 +81,7 @@ pub struct Runtime {
 }
 
 impl Runtime {
-    /// Up to `max` parcels intersecting `bbox`, reading `page` at a time when the source pages
+    /// Up to `max` features intersecting `bbox`, reading `page` at a time when the source pages
     /// (the spec's page size by default).
     pub async fn fetch(&self, spec: &Spec, bbox: Bbox, max: usize, page: Option<u32>) -> Result<Fetch> {
         let mut fetch = match &spec.source {
@@ -95,7 +94,7 @@ impl Runtime {
             Source::OgcFeatures { url, page_size } => self.ogc(url, page.unwrap_or(*page_size), bbox, max).await?,
             Source::BulkDownload { url, format, epsg } => self.bulk(url, *format, *epsg, bbox, max).await?,
         };
-        if let Some(first) = fetch.parcels.first() {
+        if let Some(first) = fetch.features.first() {
             fetch.attribute_names = first.attributes.keys().cloned().collect();
         }
         Ok(fetch)
@@ -155,28 +154,28 @@ impl Runtime {
                 );
             }
             fetch.pages += 1;
-            let before = fetch.parcels.len();
+            let before = fetch.features.len();
             if geojson {
-                read_geojson_features(&body, &mut fetch.parcels)?;
+                read_geojson_features(&body, &mut fetch.features)?;
             } else {
                 for feature in
                     body["features"].as_array().ok_or_else(|| anyhow!("the ArcGIS answer has no features"))?
                 {
-                    fetch.parcels.push(Parcel {
+                    fetch.features.push(Feature {
                         geometry: geom::from_esri(&feature["geometry"])?,
                         attributes: feature["attributes"].as_object().cloned().unwrap_or_default(),
                     });
                 }
             }
-            let got = fetch.parcels.len() - before;
-            repeated(&fetch.parcels, before, got, "resultOffset")?;
+            let got = fetch.features.len() - before;
+            repeated(&fetch.features, before, got, "resultOffset")?;
             let exceeded =
                 body["exceededTransferLimit"].as_bool().or(body["properties"]["exceededTransferLimit"].as_bool());
             let more = exceeded.unwrap_or(got >= page as usize) && got > 0;
             if !more {
                 break;
             }
-            if fetch.parcels.len() >= max {
+            if fetch.features.len() >= max {
                 fetch.more = true;
                 break;
             }
@@ -227,19 +226,19 @@ impl Runtime {
             ensure!((200..300).contains(&fetched.status), "the WFS answered {}", fetched.status);
             let body = fetched.json()?;
             fetch.pages += 1;
-            let before = fetch.parcels.len();
-            read_geojson_features(&body, &mut fetch.parcels)?;
+            let before = fetch.features.len();
+            read_geojson_features(&body, &mut fetch.features)?;
             if lat_lon {
-                for parcel in &mut fetch.parcels[before..] {
-                    parcel.geometry = parcel.geometry.map_coords(|c| geo::Coord { x: c.y, y: c.x });
+                for feature in &mut fetch.features[before..] {
+                    feature.geometry = feature.geometry.map_coords(|c| geo::Coord { x: c.y, y: c.x });
                 }
             }
-            let got = fetch.parcels.len() - before;
-            repeated(&fetch.parcels, before, got, "startIndex")?;
+            let got = fetch.features.len() - before;
+            repeated(&fetch.features, before, got, "startIndex")?;
             if got < page as usize || got == 0 {
                 break;
             }
-            if fetch.parcels.len() >= max {
+            if fetch.features.len() >= max {
                 fetch.more = true;
                 break;
             }
@@ -264,10 +263,10 @@ impl Runtime {
             }
             let body = self.http.get_json(&url, PAGE_CAP).await?;
             fetch.pages += 1;
-            read_geojson_features(&body, &mut fetch.parcels)?;
+            read_geojson_features(&body, &mut fetch.features)?;
             let link = body["links"].as_array().into_iter().flatten().find(|l| l["rel"] == "next");
             if let Some(href) = link.and_then(|l| l["href"].as_str()) {
-                if fetch.parcels.len() >= max {
+                if fetch.features.len() >= max {
                     fetch.more = true;
                     break;
                 }
@@ -279,27 +278,27 @@ impl Runtime {
 
     async fn bulk(&self, url: &str, format: BulkFormat, epsg: u32, bbox: Bbox, max: usize) -> Result<Fetch> {
         let bytes = self.download(url).await?;
-        let mut parcels = Vec::new();
+        let mut features = Vec::new();
         match format {
             BulkFormat::Geojson => {
                 let body: Value = serde_json::from_slice(&bytes).context("the download is not GeoJSON")?;
-                read_geojson_features(&body, &mut parcels)?;
+                read_geojson_features(&body, &mut features)?;
             }
-            BulkFormat::ShapefileZip => read_shapefile_zip(&bytes, &mut parcels)?,
+            BulkFormat::ShapefileZip => read_shapefile_zip(&bytes, &mut features)?,
         }
         if epsg == 3857 {
-            for parcel in &mut parcels {
-                parcel.geometry = parcel.geometry.map_coords(|c| {
+            for feature in &mut features {
+                feature.geometry = feature.geometry.map_coords(|c| {
                     let (x, y) = geom::from_web_mercator(c.x, c.y);
                     geo::Coord { x, y }
                 });
             }
         }
-        let mut inside: Vec<Parcel> =
-            parcels.into_iter().filter(|p| Bbox::of(&p.geometry).is_some_and(|b| b.intersects(&bbox))).collect();
+        let mut inside: Vec<Feature> =
+            features.into_iter().filter(|p| Bbox::of(&p.geometry).is_some_and(|b| b.intersects(&bbox))).collect();
         let more = inside.len() > max;
         inside.truncate(max);
-        Ok(Fetch { parcels: inside, pages: 1, more, attribute_names: Vec::new(), first_url: url.to_owned() })
+        Ok(Fetch { features: inside, pages: 1, more, attribute_names: Vec::new(), first_url: url.to_owned() })
     }
 
     /// A bulk file, from the cache when it has been downloaded before.
@@ -322,11 +321,11 @@ impl Runtime {
 
 /// Fails when the page just read starts as the one before it did: the server ignores the
 /// paging parameter and would return the same features forever.
-fn repeated(parcels: &[Parcel], before: usize, got: usize, parameter: &str) -> Result<()> {
+fn repeated(features: &[Feature], before: usize, got: usize, parameter: &str) -> Result<()> {
     if before == 0 || got == 0 || before < got {
         return Ok(());
     }
-    let first = |i: usize| (&parcels[i].attributes, Bbox::of(&parcels[i].geometry));
+    let first = |i: usize| (&features[i].attributes, Bbox::of(&features[i].geometry));
     ensure!(
         first(before) != first(before - got),
         "the server answered the same page twice: it ignores {parameter}, so it cannot be paged"
@@ -335,10 +334,10 @@ fn repeated(parcels: &[Parcel], before: usize, got: usize, parameter: &str) -> R
 }
 
 fn empty() -> Fetch {
-    Fetch { parcels: Vec::new(), pages: 0, more: false, attribute_names: Vec::new(), first_url: String::new() }
+    Fetch { features: Vec::new(), pages: 0, more: false, attribute_names: Vec::new(), first_url: String::new() }
 }
 
-fn read_geojson_features(body: &Value, into: &mut Vec<Parcel>) -> Result<()> {
+fn read_geojson_features(body: &Value, into: &mut Vec<Feature>) -> Result<()> {
     let features = body["features"].as_array().ok_or_else(|| {
         anyhow!(
             "the answer is not a GeoJSON FeatureCollection: {}",
@@ -349,7 +348,7 @@ fn read_geojson_features(body: &Value, into: &mut Vec<Parcel>) -> Result<()> {
         if feature["geometry"].is_null() {
             continue;
         }
-        into.push(Parcel {
+        into.push(Feature {
             geometry: geom::from_geojson(&feature["geometry"])?,
             attributes: feature["properties"].as_object().cloned().unwrap_or_default(),
         });
@@ -357,7 +356,7 @@ fn read_geojson_features(body: &Value, into: &mut Vec<Parcel>) -> Result<()> {
     Ok(())
 }
 
-fn read_shapefile_zip(bytes: &[u8], into: &mut Vec<Parcel>) -> Result<()> {
+fn read_shapefile_zip(bytes: &[u8], into: &mut Vec<Feature>) -> Result<()> {
     let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).context("the download is not a zip")?;
     let names: Vec<String> = archive.file_names().map(str::to_owned).collect();
     let shp =
@@ -400,7 +399,7 @@ fn read_shapefile_zip(bytes: &[u8], into: &mut Vec<Parcel>) -> Result<()> {
             };
             attributes.insert(name, value);
         }
-        into.push(Parcel { geometry, attributes });
+        into.push(Feature { geometry, attributes });
     }
     Ok(())
 }

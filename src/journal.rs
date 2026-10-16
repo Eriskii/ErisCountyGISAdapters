@@ -14,7 +14,7 @@ use std::sync::Mutex;
 pub enum Job {
     /// The search for one layer covering a whole state, by postal abbreviation.
     State(String),
-    /// The search for one county's parcels, by FIPS.
+    /// The search for one county's layers, by FIPS.
     County(String),
 }
 

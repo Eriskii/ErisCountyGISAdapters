@@ -1,13 +1,14 @@
-//! What the scheduler and the agents' tools share: the counties, the registry, the parcel
+//! What the scheduler and the agents' tools share: the dataset, the counties, its registry, the
 //! runtime, and each live agent's job and progress.
 
 use crate::assist::Assistant;
-use crate::counties::{Counties, County};
 use crate::journal::{Job, Tokens};
-use crate::registry::Registry;
-use crate::runtime::Runtime;
-use crate::spec::{Reason, Spec};
-use crate::validate::{self, Report};
+use erisgis::Dataset;
+use erisgis::counties::{Counties, County};
+use erisgis::registry::Registry;
+use erisgis::runtime::Runtime;
+use erisgis::spec::{Reason, Spec};
+use erisgis::validate::{self, Report};
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 
@@ -47,6 +48,10 @@ pub struct AgentJob {
     pub started: u64,
     /// Whether the agent has been told to keep going once already.
     pub nudged: bool,
+    /// Specs it saved.
+    pub saved: usize,
+    /// Whether it has been asked about the jurisdictions its saved layer leaves out.
+    pub followed_up: bool,
 }
 
 impl AgentJob {
@@ -62,8 +67,10 @@ impl AgentJob {
             tokens: Tokens::default(),
             tool_tokens: BTreeMap::new(),
             trail: VecDeque::new(),
-            started: crate::registry::now(),
+            started: erisgis::registry::now(),
             nudged: false,
+            saved: 0,
+            followed_up: false,
         }
     }
 
@@ -76,6 +83,8 @@ impl AgentJob {
 }
 
 pub struct Work {
+    /// The dataset the run writes adapters for.
+    pub dataset: &'static Dataset,
     pub counties: Arc<Counties>,
     pub registry: Mutex<Registry>,
     pub runtime: Runtime,
@@ -125,7 +134,7 @@ impl Work {
     pub async fn validate_for(&self, job: &Job, spec: &Spec) -> (bool, Vec<Report>) {
         let counties = self.sample_counties(job);
         let reports: Vec<Report> = futures_util::future::join_all(
-            counties.iter().map(|county| validate::validate(&self.runtime, spec, county)),
+            counties.iter().map(|county| validate::validate(&self.runtime, self.dataset, spec, county)),
         )
         .await;
         let passed = reports.iter().filter(|r| r.passed).count();

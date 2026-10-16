@@ -9,12 +9,12 @@
 use crate::journal::{Event, Job, JobHistory, Journal, Outcome, Tokens, replay};
 use crate::models::Rung;
 use crate::prompts;
-use crate::registry::{Standing, now};
-use crate::spec::Spec;
 use crate::tools;
-use crate::validate;
 use crate::work::{AgentJob, Resolution, Work};
 use anyhow::Result;
+use erisgis::registry::{Standing, now};
+use erisgis::spec::Spec;
+use erisgis::validate;
 use erisharness::Harness;
 use erisharness::agent::{AgentSpec, AgentState, Item, Observation};
 use erisharness::machine::{DirectSpec, MachineSpec};
@@ -420,7 +420,7 @@ impl Scheduler {
             if self.refused.lock().unwrap().contains(&key) {
                 continue;
             }
-            let report = validate::validate(&self.work.runtime, &spec, county).await;
+            let report = validate::validate(&self.work.runtime, self.work.dataset, &spec, county).await;
             let _ = self.journal.append(&Event::Checked {
                 at: now(),
                 adapter: spec.id.clone(),
@@ -450,6 +450,7 @@ impl Scheduler {
                 let briefing = {
                     let registry = self.work.registry.lock().unwrap();
                     prompts::county_briefing(
+                        self.work.dataset,
                         county,
                         &self.work.counties,
                         &registry,
@@ -457,12 +458,15 @@ impl Scheduler {
                         dead.as_ref().map(|(s, r)| (s, r.as_str())),
                     )
                 };
-                (prompts::system_prompt(false), briefing)
+                (prompts::system_prompt(self.work.dataset, false), briefing)
             }
             Job::State(state) => {
                 let count = self.work.counties.in_state(state).count();
                 let name = self.work.counties.in_state(state).next().map(|c| c.state_name.clone()).unwrap_or_default();
-                (prompts::system_prompt(true), prompts::state_briefing(state, &name, count, &history.summaries))
+                (
+                    prompts::system_prompt(self.work.dataset, true),
+                    prompts::state_briefing(self.work.dataset, state, &name, count, &history.summaries),
+                )
             }
         };
         let tools: Vec<String> = match job {
@@ -525,6 +529,25 @@ impl Scheduler {
                 },
                 Job::State(_) => None,
             });
+            // An agent that saved one layer of a dataset taken per jurisdiction is asked once
+            // about the jurisdictions it may have left out.
+            if matches!(resolution, Some(Resolution::Covered(_)))
+                && self.work.dataset.per_jurisdiction
+                && record.state != AgentState::Failed
+            {
+                let ask = self
+                    .work
+                    .with_agent(agent, |a| {
+                        let ask = a.saved == 1 && !a.followed_up;
+                        a.followed_up = true;
+                        ask
+                    })
+                    .unwrap_or(false);
+                if ask {
+                    self.harness.send(agent, "user", self.work.dataset.agents.follow_up)?;
+                    continue;
+                }
+            }
             let last = last_text(&self.harness, agent);
             let outcome = match (resolution, record.state, job) {
                 (Some(Resolution::Covered(id)), _, _) => Outcome::Done { detail: id },
@@ -637,7 +660,7 @@ impl Scheduler {
         futures_util::stream::iter(pairs)
             .for_each_concurrent(concurrency, |(spec, fips)| async move {
                 let Some(county) = self.work.counties.get(&fips) else { return };
-                let report = validate::validate(&self.work.runtime, &spec, county).await;
+                let report = validate::validate(&self.work.runtime, self.work.dataset, &spec, county).await;
                 if report.passed {
                     let _ = self.work.registry.lock().unwrap().verified(&spec.id, &fips, now());
                 } else {

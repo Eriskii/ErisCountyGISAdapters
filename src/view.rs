@@ -2,8 +2,8 @@
 //! the log's tail. The TUI draws it; headless runs print its progress line.
 
 use crate::journal::{Job, Tokens};
-use crate::registry::now;
 use crate::scheduler::{Scheduler, Status};
+use erisgis::registry::now;
 use std::collections::BTreeMap;
 use std::sync::atomic::Ordering;
 

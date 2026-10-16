@@ -2,10 +2,10 @@
 //! unavailable by reason with their evidence, the counties agents could not finish grouped by
 //! what stopped them, the hosts behind the most trouble, and what the run cost.
 
-use crate::counties::Counties;
 use crate::journal::{Event, Job, Outcome, Tokens};
-use crate::registry::{Registry, Standing};
-use crate::spec::Coverage;
+use erisgis::counties::Counties;
+use erisgis::registry::{Registry, Standing};
+use erisgis::spec::Coverage;
 use regex::Regex;
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write;
@@ -22,7 +22,7 @@ const CAUSES: [(&str, &str); 7] = [
         r"captcha|bot[- ]check|bot check|cloudflare|interstitial|are you a robot",
     ),
     ("Servers too slow to answer", r"timed? out|\b50[234]\b|unable to perform query|too slowly|took longer"),
-    ("Samples that found no parcels", r"\bsample\b|interior point|at least 5|minimum of 5"),
+    ("Samples that found nothing", r"\bsample\b|interior point|at least \d|minimum of \d"),
     ("Paging that does not work", r"paging|resultoffset|offset"),
     ("Fields that do not map", r"field|attribute"),
 ];
@@ -196,7 +196,7 @@ pub fn notes(counties: &Counties, registry: &Registry, events: &[Event], now: u6
 mod tests {
     use super::*;
     use crate::journal::Tokens;
-    use crate::spec::{Reason, Unavailable};
+    use erisgis::spec::{Reason, Unavailable};
     use serde_json::json;
 
     fn finished(fips: &str, rung: usize, agent: &str, outcome: Outcome) -> Event {

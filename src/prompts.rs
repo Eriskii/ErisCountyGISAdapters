@@ -1,20 +1,17 @@
 //! What agents are told: the spec format and how to search, then each job's briefing with its
 //! county or state, what neighbouring counties' adapters use, and what earlier attempts tried.
 
-use crate::counties::{Counties, County};
-use crate::registry::Registry;
-use crate::spec::{Source, Spec};
+use erisgis::Dataset;
+use erisgis::counties::{Counties, County};
+use erisgis::registry::Registry;
+use erisgis::spec::{Source, Spec};
 
-const HOW: &str = r#"How to find parcels:
-- Counties and states mostly publish parcels as ArcGIS REST services (…/arcgis/rest/services/…/FeatureServer/N
-  or MapServer/N), often behind an ArcGIS Hub open-data site. Start with `arcgis search parcels`, then
-  `web search <county> county <state> parcels gis`.
-- Read pages by asking about them: `web read <url> which links lead to parcel data or ArcGIS REST
+/// How to search, around the dataset's own guidance; `{many}` is the dataset's features.
+const HOW: &str = r#"- Read pages by asking about them: `web read <url> which links lead to {many} or ArcGIS REST
   services?` answers in a few lines with the URLs. An open-data page links its service ("View API
   Resources", "I want to use this", a …/FeatureServer/0 URL); a web viewer's page or config names its
   services. Do not `web get` HTML pages: `web get` is for JSON endpoints, with --grep.
-- `arcgis probe` a services directory, then a service, then its parcel layer. Pick the polygon layer of
-  tax parcels: not lot lines, points or subdivisions.
+- `arcgis probe` a services directory, then a service, then its layer of {many}.
 - Neighbouring counties often share a host or vendor (Schneider/Beacon, Tyler, Vision, a regional
   consortium, a state portal): try theirs first.
 - Prefer the official layer: the county's or city's own, its state's, or a vendor's serving it for
@@ -23,28 +20,22 @@ const HOW: &str = r#"How to find parcels:
   and whose copy it is in "notes".
 - Then `spec validate '<json>'`, read the report, fix what it names, and `spec submit` once it passes.
 
-A county is unavailable only if, after a real search, its parcels are not published as a queryable
-service or file. A viewer that draws parcels from a public ArcGIS service is available: use that
+A county is unavailable only if, after a real search, its {many} are not published as a queryable
+service or file. A viewer that draws {many} from a public ArcGIS service is available: use that
 service. Never work around logins, keys, captchas, or terms that forbid automated access; those make a
 county unavailable.
 
 Be efficient: every command costs time, and `--help` on any command explains it. Do not repeat a
 command you already ran."#;
 
-pub fn system_prompt(state_job: bool) -> String {
-    let goal = if state_job {
-        "You look for ONE public layer of tax parcel polygons that covers a whole US state (a statewide \
-         parcel layer from a state GIS office, often aggregated from counties). When you find one, \
-         validate a spec for it with coverage {\"states\": [\"XX\"]} using `statewide_spec validate`, and \
-         save it with `statewide_spec submit`. A statewide layer with a county field covers every county \
-         without a filter. If you find no statewide layer after a real search, stop and say so in one or \
-         two sentences, naming any per-county portals you came across."
-    } else {
-        "You find where one US county publishes its tax parcel polygons, then write and validate an \
-         adapter spec that reads them. Your job ends when `spec submit` saves a passing spec, or when \
-         `spec unavailable` records that the county has none."
-    };
-    format!("{goal}\n\n{HOW}")
+pub fn system_prompt(dataset: &Dataset, state_job: bool) -> String {
+    let goal = if state_job { dataset.agents.state_goal } else { dataset.agents.county_goal };
+    format!(
+        "{goal}\n\nHow to find {many}:\n{own}\n{how}",
+        many = dataset.many,
+        own = dataset.agents.how,
+        how = HOW.replace("{many}", dataset.many)
+    )
 }
 
 fn source_line(spec: &Spec) -> String {
@@ -75,6 +66,7 @@ fn neighbour_adapters(registry: &Registry, counties: &Counties, county: &County)
 }
 
 pub fn county_briefing(
+    dataset: &Dataset,
     county: &County,
     counties: &Counties,
     registry: &Registry,
@@ -84,7 +76,7 @@ pub fn county_briefing(
     let b = county.bbox;
     let mut text = format!(
         "Your county: {} ({}), FIPS {}.\nBounding box (lon/lat): west {:.4}, south {:.4}, east {:.4}, north {:.4}. \
-         A point inside it: {:.5},{:.5}. Validation samples parcels around that point.",
+         A point inside it: {:.5},{:.5}. Validation samples {} around that point.",
         county.name,
         county.state_name,
         county.fips,
@@ -94,6 +86,7 @@ pub fn county_briefing(
         b.north(),
         county.interior[0],
         county.interior[1],
+        dataset.many,
     );
     let neighbours = neighbour_adapters(registry, counties, county);
     if !neighbours.is_empty() {
@@ -125,9 +118,16 @@ pub fn county_briefing(
     text
 }
 
-pub fn state_briefing(state: &str, state_name: &str, counties: usize, summaries: &[String]) -> String {
+pub fn state_briefing(
+    dataset: &Dataset,
+    state: &str,
+    state_name: &str,
+    counties: usize,
+    summaries: &[String],
+) -> String {
     let mut text = format!(
-        "Your state: {state_name} ({state}), {counties} counties. Find a statewide parcel layer, if one exists."
+        "Your state: {state_name} ({state}), {counties} counties. Find a statewide layer of {}, if one exists.",
+        dataset.many
     );
     if !summaries.is_empty() {
         text.push_str("\n\nEarlier attempts reported:\n");
@@ -148,10 +148,22 @@ mod tests {
 
     #[test]
     fn agents_are_told_to_prefer_official_layers_and_mark_copies() {
-        for statewide in [false, true] {
-            let prompt = system_prompt(statewide);
-            assert!(prompt.contains("Prefer the official layer"), "{prompt}");
-            assert!(prompt.contains("\"official\": false"), "{prompt}");
+        for dataset in erisgis::dataset::ALL {
+            for statewide in [false, true] {
+                let prompt = system_prompt(dataset, statewide);
+                assert!(prompt.contains("Prefer the official layer"), "{prompt}");
+                assert!(prompt.contains("\"official\": false"), "{prompt}");
+                assert!(prompt.contains(&format!("`arcgis search {}`", dataset.agents.search)), "{prompt}");
+                assert!(!prompt.contains("{many}"), "{prompt}");
+            }
+        }
+    }
+
+    #[test]
+    fn zoning_agents_look_for_every_jurisdictions_districts_and_not_plans() {
+        let prompt = system_prompt(&erisgis::zoning::ZONING, false);
+        for words in ["largest cities", "not future land use", "none-exists", "zoning districts are not published"] {
+            assert!(prompt.contains(words), "{words}: {prompt}");
         }
     }
 }

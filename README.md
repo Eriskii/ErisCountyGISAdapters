@@ -1,21 +1,54 @@
 # ErisGISScraper
 
-The program that writes and keeps a registry of parcel adapters for US counties. An adapter is a
-small declarative spec that points at a county's public parcel service (or a statewide one) and
-maps its attributes to a normalized schema. The registry holds pointers, never parcel data, and
-lives in [ErisData](https://github.com/Eriskii/ErisData) under `GIS/`.
+The program that writes and keeps registries of GIS adapters for US counties, one registry per
+dataset: tax parcels and zoning districts. An adapter is a small declarative spec that points at
+a public layer (a county's, a city's, or a statewide one) and maps its attributes to the
+dataset's normalized fields. The registries hold pointers, never features, and live in
+[ErisData](https://github.com/Eriskii/ErisData) under `GIS/`.
 
 `eris-gis-scraper` runs [ErisHarness](https://github.com/Eriskii/ErisHarness) agents over the
 3,222 counties and county equivalents of the 50 states, DC and Puerto Rico. Agents search for each
-county's parcel layer, write a spec, and prove it works with a validator that actually queries the
+county's layers, write specs, and prove they work with a validator that actually queries the
 service. A spec reaches the registry only by passing it.
+
+## Crates
+
+| Crate | What it is |
+| --- | --- |
+| [`erisgis`](erisgis) | The library: the datasets, specs, the registry, the runtime that reads features through a spec, the validator, the lookup that reads a map view's features, the embedded counties, and the polite HTTP client. No agents. [ErisMaps](https://github.com/Eriskii/ErisMaps) reads parcels and zoning through it. Its `testing` feature is the fake county GIS server the tests run against. |
+| `erisgisscraper` | The harness: the scheduler and model ladder, the journal, the agents' command-line tools, the terminal view and the field notes, for whichever dataset `--dataset` names. |
+
+## Datasets
+
+| `--dataset` | What a county's adapters read | Normalized fields | Adapters per county |
+| --- | --- | --- | --- |
+| `parcels` (default) | Tax parcel polygons | `apn`, `owner`, `address`, `acres`, `land_use`, `assessed_value` | One |
+| `zoning` | Base zoning district polygons | `zone`, `zone_name`, `jurisdiction`, `link` | One per jurisdiction: the county's own zoning, and its cities' |
+
+A dataset (`erisgis::Dataset`) is a description the harness reads: its fields and which of them
+identify a feature, how the validator samples (parcels: at least 5 in boxes of 0.01°, 0.04°,
+then 0.12°; zoning districts: at least 3 in boxes of 0.02°, 0.08°, then 0.25°), how features
+become map features (parcels on one outline stack into one feature listing its units; every
+zoning district gets a `class`), the reasons a county may be unavailable, and what agents are
+told to look for.
+
+Zoning is set by counties for their unincorporated land and by cities and towns for their own,
+so a zoning agent may save several layers for one county: a combined layer when the county
+publishes one, otherwise the county's own and its largest cities', up to five. An agent that
+saves one layer and stops is asked once whether the county's own zoning or its largest city's is
+missing. `class` is a broad use (`residential`, `commercial`, `office`, `mixed-use`,
+`industrial`, `agricultural`, `open-space`, `public`, `planned`, `other`) guessed from the
+district's name, then its code, so maps can color every jurisdiction's districts alike; it is
+computed whenever a feature is read, never stored.
 
 ## The registry
 
+Each dataset's registry is the folder named after it:
+
 ```text
-GIS/adapters/<id>.json        one spec each
-GIS/unavailable/<fips>.json   why a county has no adapter, and when to look again
-GIS/index.json                county FIPS → ids of the adapters verified for it
+GIS/<dataset>/adapters/<id>.json        one spec each
+GIS/<dataset>/unavailable/<fips>.json   why a county has no adapter, and when to look again
+GIS/<dataset>/index.json                county FIPS → ids of the adapters verified for it
 ```
 
 A spec:
@@ -47,26 +80,30 @@ serving it for them) and `false` for a copy someone else hosts, such as a person
 item, with whose copy it is in `notes`; agents use a copy only when nothing official is
 queryable, and `spec submit` refuses a spec that does not say. Specs written before the field
 existed read as unknown. `notes` lists the unofficial adapters. `coverage` is a list of county
-FIPS codes or a list of states. Normalized fields are `apn`,
-`owner`, `address`, `acres`, `land_use` and `assessed_value`, each optional; `filter` is an
-optional static filter (an ArcGIS `where` clause). Unavailable reasons are `no-public-gis`,
-`viewer-only`, `paywalled`, `login-required` and `tos-forbids-automation`; a record is searched
-again after 180 days, or 365 for the last two.
+FIPS codes or a list of states. `fields` maps the dataset's normalized fields, each optional, to
+the source's attribute names; `filter` is an optional static filter (an ArcGIS `where` clause).
+Unavailable reasons are `no-public-gis`, `viewer-only`, `paywalled`, `login-required`,
+`tos-forbids-automation`, and for zoning `none-exists` (a county that does not zone, with no
+city in it that does); a record is searched again after 180 days, or 365 for `paywalled` and
+`tos-forbids-automation`.
 
 ## Validation
 
 `validate` runs a spec for one county:
 
 - **query**: the service answers, and pages without repeating itself.
-- **features**: at least 5 parcels around a point inside the county (boxes of 0.01°, 0.04°,
-  then 0.12°).
+- **features**: enough features around a point inside the county, in the dataset's sample
+  boxes; a county whose point has none nearby is sampled around one of the layer's own features
+  inside it.
 - **longitude-latitude**, **location**, **in-county**: coordinates are degrees, lie where they
-  were asked for, and mostly inside the county's boundary. Swapped axes and projected
-  coordinates fail here.
+  were asked for (each feature's extent meets the sample box), and mostly inside the county's
+  boundary. Swapped axes and projected coordinates fail here.
 - **valid-polygons**: 90% of polygons are valid.
-- **fields-mapped**, **field-fill**: at least one of `apn`, `address`, `owner` is mapped; every
-  mapped attribute exists and is filled for half the parcels or more.
-- **paging**: reading the sample in pages of a third returns the same parcels.
+- **fields-mapped**, **field-fill**: at least one of the dataset's identifying fields is mapped
+  (parcels: `apn`, `address` or `owner`; zoning: `zone` or `zone_name`); every mapped attribute
+  exists and is filled for half the features or more.
+- **paging**: reading the sample again in two halves returns the same features.
+- **time**: the whole validation takes under two minutes.
 
 The report lists the source's attribute names and sample attributes, which is how agents map
 fields. A state's spec is validated against three counties spread across the state and passes
@@ -129,8 +166,8 @@ a services directory, down to the lines they need. Statewide searches get the sa
 `statewide_spec`, without `unavailable`. The terminal view shows each agent's current command
 line.
 
-**Checkpoints.** `state/journal.jsonl` gets a line, flushed to disk, when each attempt starts
-and ends. The harness keeps its agents in `state/harness`. A run that is killed or stopped
+**Checkpoints.** `state/<dataset>/journal.jsonl` gets a line, flushed to disk, when each
+attempt starts and ends. The harness keeps its agents in `state/<dataset>/harness`. A run that is killed or stopped
 resumes on the next start: running agents go on where they stood, finished attempts are not
 repeated, and each county keeps its rung. `--recheck` validates every saved adapter first; a
 county whose adapter fails is searched again with the dead spec in its briefing.
@@ -148,16 +185,19 @@ eris-gis-scraper run --states WI,GA --concurrency 16
 eris-gis-scraper run --counties 13121 --no-tui --ladder gpt-5-codex-mini:medium,gpt-5-codex:high
 eris-gis-scraper run --states WI --ladder haiku:medium,sonnet:high,opus:max
 eris-gis-scraper run --recheck
+eris-gis-scraper --dataset zoning run --ladder haiku:medium,sonnet:high --concurrency 64
 eris-gis-scraper validate spec.json 13121
-eris-gis-scraper status                # the registry by state
+eris-gis-scraper --dataset zoning validate spec.json 13121
+eris-gis-scraper status                # the registry by state; --dataset zoning for zoning's
 eris-gis-scraper notes --out notes.md  # field notes: unavailable counties, what stopped agents, costs
 eris-gis-scraper import-login ~/.config/ErisMaps/agents/account.json
-eris-gis-scraper regenerate-counties   # rebuild data/counties.json.gz from census.gov
+eris-gis-scraper regenerate-counties   # rebuild erisgis/data/counties.json.gz from census.gov
 ```
 
-`--registry` (default `../../data/ErisData/GIS`, the ErisData checkout in the monorepo) and
-`--state` (default `state`) choose the directories. The
-logins live in `state/accounts/`, owner-only, through [ErisAgentAuth](../../libs/ErisAgentAuth):
+`--dataset` (default `parcels`) chooses the dataset. `--registry` (default
+`../../data/ErisData/GIS`, the ErisData checkout in the monorepo; each dataset's registry is its
+folder in it) and `--state` (default `state`; each dataset's journal and agents are its folder
+in it) choose the directories. The logins, shared by every dataset, live in `state/accounts/`, owner-only, through [ErisAgentAuth](../../libs/ErisAgentAuth):
 
 - `chatgpt.json`: the ChatGPT login, kept and refreshed.
 - `claude.json`: a bound Claude login, which is only the credentials file's path (by default
@@ -178,17 +218,20 @@ instead, and Ctrl-C stops it the same way.
 
 ## Counties
 
-`data/counties.json.gz` holds every county's FIPS, name, state, bounding box, an interior point
+`erisgis/data/counties.json.gz` holds every county's FIPS, name, state, bounding box, an interior point
 and its boundary, from the Census Bureau's 2024 1:500,000 cartographic boundaries, simplified to
 about 30 m. It is embedded in the binary; `regenerate-counties` rebuilds it.
 
 ## Tests
 
-`cargo test` runs the command-line tools as agents call them (help, parse errors, quoting,
+`cargo test --workspace` runs `erisgis`'s validator, lookup and zoning tests and the
+scraper's. They cover the command-line tools as agents call them (help, parse errors, quoting,
 `--grep`, the spec workflow, search and page reading on a stand-in Claude API and their fallbacks), the validator against a fake county server on loopback (ArcGIS GeoJSON and
 Esri JSON, a latitude-first WFS, OGC API Features, and broken variants: projected coordinates,
-ignored offsets, refusals, missing fields), and whole runs against a stand-in model: an agent
-that gives up and hands over to the next rung, a statewide layer covering its counties without
-county agents, a county marked unavailable, and a run stopped mid-turn that resumes its agent.
+ignored offsets, refusals, missing fields), zoning on a fake zoning layer (validation, a county read through several jurisdictions' layers,
+district classes, each dataset's spec help and reasons), and whole runs against a stand-in
+model: an agent that gives up and hands over to the next rung, a statewide layer covering its
+counties without county agents, a county marked unavailable, a run stopped mid-turn that
+resumes its agent, and a zoning agent asked once about the jurisdictions its layer left out.
 `ERISGISSCRAPER_LIVE_STATE=<state dir> cargo test --test live -- --ignored --nocapture` runs one
 real search and one real page read on the Claude login bound in that state directory.

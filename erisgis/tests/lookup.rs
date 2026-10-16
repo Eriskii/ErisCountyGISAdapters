@@ -1,14 +1,15 @@
-//! Reading a map view's parcels through the registry: the counties a box crosses, the adapter
-//! each is read through, and the parcels, against a fake county server.
+//! Reading a map view's features through a dataset's registry: the counties a box crosses, the
+//! adapters each is read through, and the features, against a fake county server.
 
-mod support;
+use erisgis::testing as support;
 
-use erisgisscraper::counties::Counties;
-use erisgisscraper::geom::Bbox;
-use erisgisscraper::http::{Http, Limits};
-use erisgisscraper::lookup::{self, View};
-use erisgisscraper::registry::Registry;
-use erisgisscraper::runtime::{Runtime, VALIDATE_WITHIN};
+use erisgis::counties::Counties;
+use erisgis::geom::Bbox;
+use erisgis::http::{Http, Limits};
+use erisgis::lookup::{self, View};
+use erisgis::parcels::PARCELS;
+use erisgis::registry::Registry;
+use erisgis::runtime::{Runtime, VALIDATE_WITHIN};
 use serde_json::{Value, json};
 use std::path::Path;
 
@@ -43,7 +44,7 @@ fn dane_box(counties: &Counties) -> Bbox {
 async fn read(registry: &Path, cache: &Path, bbox: Bbox) -> View {
     let counties = Counties::embedded().unwrap();
     let registry = Registry::open(registry).unwrap();
-    lookup::read(&runtime(cache), &registry, &counties, bbox, Some(cache)).await
+    lookup::read(&runtime(cache), &registry, &PARCELS, &counties, bbox, Some(cache)).await
 }
 
 #[tokio::test]
@@ -60,9 +61,9 @@ async fn a_box_in_a_covered_county_holds_its_parcels_with_their_fields_and_sourc
     assert_eq!(view.counties.len(), 1);
     let dane = &view.counties[0];
     assert_eq!((dane.fips.as_str(), dane.county.as_str()), ("55025", "Dane County, WI"));
-    let source = dane.source.as_ref().unwrap();
+    let [source] = dane.sources.as_slice() else { panic!("one source: {:?}", dane.sources) };
     assert_eq!((source.adapter.as_str(), source.verified), ("wi-dane", true));
-    assert_eq!(dane.error, None);
+    assert_eq!(source.error, None);
     assert!(!view.features.is_empty());
     let first = &view.features[0];
     assert_eq!(first["geometry"]["type"], "MultiPolygon");
@@ -87,7 +88,7 @@ async fn a_statewide_claim_reads_a_county_it_was_not_verified_for() {
     adapter(&registry, "wi-statewide", &format!("{root}/arcgis/good/FeatureServer/0"), json!({"states": ["WI"]}));
 
     let view = read(&registry, &dir.path().join("cache"), dane_box(&counties)).await;
-    let source = view.counties[0].source.as_ref().unwrap();
+    let source = view.counties[0].sources.first().unwrap();
     assert_eq!((source.adapter.as_str(), source.verified), ("wi-statewide", false));
     assert!(!view.features.is_empty());
 }
@@ -104,13 +105,13 @@ async fn a_county_without_an_adapter_says_why_and_shows_nothing() {
     );
     let view = read(&registry, &dir.path().join("cache"), dane_box(&counties)).await;
     let dane = &view.counties[0];
-    assert!(dane.source.is_none());
+    assert!(dane.sources.is_empty());
     let unavailable = dane.unavailable.as_ref().unwrap();
     assert_eq!((unavailable.reason.as_str(), unavailable.note.as_str()), ("paywalled", "Parcels are sold."));
     assert!(view.features.is_empty());
 
     let empty = read(&dir.path().join("nothing"), &dir.path().join("cache"), dane_box(&counties)).await;
-    assert!(empty.counties[0].source.is_none() && empty.counties[0].unavailable.is_none());
+    assert!(empty.counties[0].sources.is_empty() && empty.counties[0].unavailable.is_none());
 }
 
 #[tokio::test]
@@ -138,7 +139,7 @@ async fn answers_are_kept_and_read_again_without_the_server() {
     // The same box again, with the source moved away: the kept answer serves it.
     adapter(&registry, "wi-dane", "http://127.0.0.1:9/arcgis/gone/FeatureServer/0", json!({"counties": ["55025"]}));
     let again = read(&registry, &cache, dane_box(&counties)).await;
-    assert_eq!(again.counties[0].error, None, "kept by the source it was read from, not the URL");
+    assert_eq!(again.counties[0].sources[0].error, None, "kept by the source it was read from, not the URL");
     assert_eq!(again.features.len(), first.features.len());
 }
 
